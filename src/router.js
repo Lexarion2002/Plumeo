@@ -1,7 +1,7 @@
 import { getUser } from "./auth.js"
 
 export async function route() {
-  const hash = window.location.hash || "#login"
+  const hash = window.location.hash || "#/home"
   const userResult = await getUser()
 
   if (!userResult.ok) {
@@ -11,23 +11,45 @@ export async function route() {
     }
   }
 
-  if (hash === "#app" && userResult.user === null) {
-    window.location.hash = "#login"
+  if (userResult.user === null) {
+    if (hash !== "#login" && hash !== "#/login") {
+      window.location.hash = "#login"
+    }
     return {
       page: "login",
       props: { message: "Veuillez vous connecter." }
     }
   }
 
-  if (hash === "#app") {
+  if (hash === "#login" || hash === "#/login" || hash === "#app") {
+    window.location.hash = "#/home"
     return {
-      page: "app",
+      page: "home",
       props: { userEmail: userResult.user?.email ?? "" }
     }
   }
 
+  if (hash === "#/home") {
+    return {
+      page: "home",
+      props: { userEmail: userResult.user?.email ?? "" }
+    }
+  }
+
+  if (hash.startsWith("#/editor/")) {
+    const projectId = hash.replace("#/editor/", "").trim()
+    return {
+      page: "editor",
+      props: {
+        userEmail: userResult.user?.email ?? "",
+        projectId
+      }
+    }
+  }
+
+  window.location.hash = "#/home"
   return {
-    page: "login",
-    props: { message: "" }
+    page: "home",
+    props: { userEmail: userResult.user?.email ?? "" }
   }
 }

@@ -1,4 +1,4 @@
-import { idbGet, idbGetAll, idbPut } from "./idb.js"
+import { idbDel, idbGet, idbGetAll, idbPut } from "./idb.js"
 
 function buildChapterLocal(remote, existing) {
   const base = existing ?? {}
@@ -58,6 +58,24 @@ export async function getLocalChapter(id) {
   return idbGet("chapters", id)
 }
 
+export async function deleteLocalProject(projectId) {
+  if (!projectId) {
+    return
+  }
+  await idbDel("projects", projectId)
+}
+
+export async function deleteLocalProjectChapters(projectId) {
+  if (!projectId) {
+    return
+  }
+  const chapters = await idbGetAll("chapters")
+  const targets = chapters.filter((chapter) => chapter.project_id === projectId)
+  for (const chapter of targets) {
+    await idbDel("chapters", chapter.id)
+  }
+}
+
 export async function saveLocalChapterDraft(id, patch) {
   const current = await idbGet("chapters", id)
   const next = {
@@ -73,4 +91,73 @@ export async function saveLocalChapterDraft(id, patch) {
 
   await idbPut("chapters", next)
   return next
+}
+
+const LAST_PROJECT_KEY = "writer:lastProjectId"
+const LAST_CHAPTER_KEY = "writer:lastChapterId"
+const LAST_CLOUD_SAVE_KEY = "plumeo:lastCloudSaveAt"
+
+export function getLastOpenedProjectId() {
+  try {
+    return localStorage.getItem(LAST_PROJECT_KEY)
+  } catch (error) {
+    return null
+  }
+}
+
+export function setLastOpenedProjectId(projectId) {
+  try {
+    if (!projectId) {
+      localStorage.removeItem(LAST_PROJECT_KEY)
+      return
+    }
+    localStorage.setItem(LAST_PROJECT_KEY, projectId)
+  } catch (error) {
+    // Ignore storage errors (private mode, quota, etc.)
+  }
+}
+
+export function getLastOpenedChapterId() {
+  try {
+    return localStorage.getItem(LAST_CHAPTER_KEY)
+  } catch (error) {
+    return null
+  }
+}
+
+export function setLastOpenedChapterId(chapterId) {
+  try {
+    if (!chapterId) {
+      localStorage.removeItem(LAST_CHAPTER_KEY)
+      return
+    }
+    localStorage.setItem(LAST_CHAPTER_KEY, chapterId)
+  } catch (error) {
+    // Ignore storage errors (private mode, quota, etc.)
+  }
+}
+
+export function getLastCloudSaveAt() {
+  try {
+    const raw = localStorage.getItem(LAST_CLOUD_SAVE_KEY)
+    if (!raw) {
+      return null
+    }
+    const parsed = Number(raw)
+    return Number.isFinite(parsed) ? parsed : null
+  } catch (error) {
+    return null
+  }
+}
+
+export function setLastCloudSaveAt(timestamp) {
+  try {
+    if (!timestamp) {
+      localStorage.removeItem(LAST_CLOUD_SAVE_KEY)
+      return
+    }
+    localStorage.setItem(LAST_CLOUD_SAVE_KEY, String(timestamp))
+  } catch (error) {
+    // Ignore storage errors (private mode, quota, etc.)
+  }
 }

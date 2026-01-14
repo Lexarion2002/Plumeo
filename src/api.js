@@ -80,6 +80,39 @@ export async function renameProject(id, title) {
   }
 }
 
+export async function deleteProject(projectId) {
+  const userResult = await getUserId()
+  if (!userResult.ok) {
+    return userResult
+  }
+
+  try {
+    const { error: chaptersError } = await supabase
+      .from("chapters")
+      .delete()
+      .eq("project_id", projectId)
+      .eq("user_id", userResult.userId)
+
+    if (chaptersError) {
+      return { ok: false, errorMessage: chaptersError.message }
+    }
+
+    const { error } = await supabase
+      .from("projects")
+      .delete()
+      .eq("id", projectId)
+      .eq("user_id", userResult.userId)
+
+    if (error) {
+      return { ok: false, errorMessage: error.message }
+    }
+
+    return { ok: true }
+  } catch (error) {
+    return { ok: false, errorMessage: error.message }
+  }
+}
+
 export async function listChapters(projectId) {
   try {
     const { data, error } = await supabase
@@ -178,6 +211,20 @@ export async function rpcUpdateChapterIfRevision({
     return userResult
   }
 
+  const normalizeRevision = (value) => {
+    if (Array.isArray(value)) {
+      const first = value[0]
+      if (first && typeof first.new_revision !== "undefined") {
+        return Number(first.new_revision)
+      }
+      return Number(value[0])
+    }
+    if (value && typeof value.new_revision !== "undefined") {
+      return Number(value.new_revision)
+    }
+    return Number(value)
+  }
+
   try {
     const { data, error } = await supabase.rpc("update_chapter_if_revision", {
       p_id: id,
@@ -191,7 +238,11 @@ export async function rpcUpdateChapterIfRevision({
       return { ok: false, errorMessage: error.message }
     }
 
-    return { ok: true, newRevision: data ?? -1 }
+    const parsed = normalizeRevision(data)
+    return {
+      ok: true,
+      newRevision: Number.isFinite(parsed) ? parsed : -1
+    }
   } catch (error) {
     return { ok: false, errorMessage: error.message }
   }

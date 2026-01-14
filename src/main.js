@@ -1,10 +1,12 @@
 import "../styles/app.css"
 import { route } from "./router.js"
-import { renderApp, renderLogin } from "./ui.js"
+import { renderApp, renderHome, renderLogin } from "./ui.js"
 import { signIn, signOut, signUp } from "./auth.js"
 import {
   listProjects,
   createProject,
+  renameProject,
+  deleteProject,
   listChapters,
   createChapter,
   fetchChapter,
@@ -15,12 +17,22 @@ import {
   getLocalProjects,
   getLocalChapters,
   getLocalChapter,
+  deleteLocalProject,
+  deleteLocalProjectChapters,
   saveLocalChapterDraft,
+  getLastOpenedProjectId,
+  getLastOpenedChapterId,
+  setLastOpenedProjectId,
+  setLastOpenedChapterId,
+  getLastCloudSaveAt,
+  setLastCloudSaveAt,
   upsertProjectsLocal,
   upsertChaptersLocal
 } from "./localStore.js"
 import { enqueueChapterUpsert, startSyncLoop, syncOnce } from "./sync.js"
-import { idbPut } from "./idb.js"
+import { idbDel, idbGetAll, idbPut } from "./idb.js"
+import { mountWritingView, unmountWritingView } from "./writingView.js"
+import { loadFromCloud, saveToCloud } from "./cloud.js"
 
 const app = document.querySelector("#app")
 
@@ -31,12 +43,21 @@ const state = {
   selectedChapterId: null,
   chapterDetail: null,
   versions: [],
-  statusText: ""
+  statusText: "",
+  homeMessage: "",
+  editingProjectId: null,
+  lastChapterTitle: null,
+  lastCloudSaveAt: null,
+  cloudStatus: "",
+  cloudBusy: false,
+  backupStatus: ""
 }
 
 const SNAPSHOT_INTERVAL_MS = 5 * 60 * 1000
+const CLOUD_AUTOSAVE_INTERVAL_MS = 5 * 60 * 1000
 
 let autosaveTimer = null
+let cloudAutosaveTimer = null
 let syncStarted = false
 let currentUserEmail = ""
 
@@ -45,6 +66,32 @@ function clearAutosaveTimer() {
     clearTimeout(autosaveTimer)
     autosaveTimer = null
   }
+}
+
+function setCloudAutosaveActive(active) {
+  if (cloudAutosaveTimer) {
+    clearInterval(cloudAutosaveTimer)
+    cloudAutosaveTimer = null
+  }
+
+  if (!active) {
+    return
+  }
+
+  cloudAutosaveTimer = window.setInterval(async () => {
+    if (state.cloudBusy || !currentUserEmail) {
+      return
+    }
+
+    const result = await saveToCloud()
+    if (result.ok) {
+      const now = Date.now()
+      setLastCloudSaveAt(now)
+      state.lastCloudSaveAt = now
+    } else {
+      console.error("cloud autosave error", result.errorMessage)
+    }
+  }, CLOUD_AUTOSAVE_INTERVAL_MS)
 }
 
 function setMessage(text) {
@@ -62,17 +109,76 @@ function setStatus(text) {
   }
 }
 
+function setHomeMessage(text) {
+  state.homeMessage = text
+  const message = document.querySelector("#home-message")
+  if (message) {
+    message.textContent = text
+  }
+}
+
 function renderAppUI() {
+  unmountWritingView()
   app.innerHTML = renderApp({
     userEmail: currentUserEmail,
     projects: state.projects,
     selectedProjectId: state.selectedProjectId,
+    editingProjectId: state.editingProjectId,
     chapters: state.chapters,
     selectedChapterId: state.selectedChapterId,
     chapterDetail: state.chapterDetail,
     versions: state.versions,
     statusText: state.statusText
   })
+  renderProjectSelectionState()
+
+  if (state.chapterDetail) {
+    mountWritingView({
+      content: state.chapterDetail.content_md ?? "",
+      onUpdate: handleChapterContentUpdate
+    })
+  }
+}
+
+function renderHomeUI() {
+  app.innerHTML = renderHome({
+    userEmail: currentUserEmail,
+    projects: state.projects,
+    lastProjectId: getLastOpenedProjectId(),
+    lastChapterTitle: state.lastChapterTitle,
+    lastCloudSaveAt: state.lastCloudSaveAt,
+    cloudStatus: state.cloudStatus,
+    cloudBusy: state.cloudBusy,
+    backupStatus: state.backupStatus,
+    homeMessage: state.homeMessage
+  })
+}
+
+function renderProjectSelectionState() {
+  const exportButton = document.querySelector("#project-export")
+  const exportHint = document.querySelector("#project-export-hint")
+  if (!exportButton || !exportHint) {
+    return
+  }
+
+  const project = state.projects.find(
+    (item) => item.id === state.selectedProjectId
+  )
+  const hasProject = Boolean(project)
+
+  exportButton.disabled = !hasProject
+  exportButton.setAttribute("aria-disabled", hasProject ? "false" : "true")
+
+  if (hasProject) {
+    const projectTitle = project.title || "Sans titre"
+    const hint = `Exporter le projet "${projectTitle}" en Markdown.`
+    exportHint.textContent = hint
+    exportButton.setAttribute("aria-label", hint)
+  } else {
+    const hint = "Selectionne un projet pour exporter."
+    exportHint.textContent = hint
+    exportButton.setAttribute("aria-label", hint)
+  }
 }
 
 function getCredentials() {
@@ -84,7 +190,7 @@ function getCredentials() {
   }
 }
 
-async function loadLocalProjects() {
+async function loadLocalProjects({ allowFallback = true } = {}) {
   const local = await getLocalProjects()
   state.projects = local
 
@@ -97,7 +203,7 @@ async function loadLocalProjects() {
     (project) => project.id === state.selectedProjectId
   )
 
-  if (!hasSelected) {
+  if (!hasSelected && allowFallback) {
     state.selectedProjectId = state.projects[0].id
   }
 }
@@ -176,49 +282,235 @@ async function pullChaptersFromCloud(projectId) {
   await loadLocalChapters()
 }
 
-async function loadAppView() {
+async function loadHomeView() {
+  state.editingProjectId = null
+  state.lastCloudSaveAt = getLastCloudSaveAt()
   await loadLocalProjects()
-  await loadLocalChapters()
-  await loadLocalChapterDetail()
-  await loadVersionsForChapter(state.selectedChapterId)
-  renderAppUI()
+  await updateLastChapterTitle()
+  renderHomeUI()
 
   await pullProjectsFromCloud()
-  await loadLocalChapters()
-  await loadLocalChapterDetail()
-  await loadVersionsForChapter(state.selectedChapterId)
-  renderAppUI()
+  await loadLocalProjects()
+  await updateLastChapterTitle()
+  renderHomeUI()
+}
 
-  if (state.selectedProjectId) {
-    await pullChaptersFromCloud(state.selectedProjectId)
-    await loadLocalChapterDetail()
-    await loadVersionsForChapter(state.selectedChapterId)
-    renderAppUI()
+async function handleCloudSave() {
+  if (state.cloudBusy) {
+    return
+  }
+  state.cloudBusy = true
+  state.cloudStatus = "Sauvegarde..."
+  renderHomeUI()
+
+  const result = await saveToCloud()
+  if (result.ok) {
+    const now = Date.now()
+    setLastCloudSaveAt(now)
+    state.lastCloudSaveAt = now
+    state.cloudStatus = "Sauvegarde terminee."
+  } else {
+    state.cloudStatus = `Erreur: ${result.errorMessage}`
+  }
+
+  state.cloudBusy = false
+  renderHomeUI()
+}
+
+async function handleCloudLoad() {
+  if (state.cloudBusy) {
+    return
+  }
+  state.cloudBusy = true
+  state.cloudStatus = "Chargement..."
+  renderHomeUI()
+
+  const result = await loadFromCloud()
+  if (result.ok) {
+    await loadLocalProjects({ allowFallback: false })
+    await updateLastChapterTitle()
+    state.cloudStatus = "Chargement termine."
+  } else {
+    state.cloudStatus = `Erreur: ${result.errorMessage}`
+  }
+
+  state.cloudBusy = false
+  renderHomeUI()
+}
+
+async function handleBackupExport() {
+  const projects = await idbGetAll("projects")
+  const chapters = await idbGetAll("chapters")
+  const outbox = await idbGetAll("outbox")
+  const payload = {
+    version: 1,
+    exportedAt: new Date().toISOString(),
+    data: {
+      projects,
+      chapters,
+      outbox
+    }
+  }
+
+  const blob = new Blob([JSON.stringify(payload)], { type: "application/json" })
+  const url = URL.createObjectURL(blob)
+  const stamp = new Date().toISOString().slice(0, 10)
+  const filename = `plumeo-backup-${stamp}.json`
+
+  const link = document.createElement("a")
+  link.href = url
+  link.download = filename
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
+  URL.revokeObjectURL(url)
+
+  state.backupStatus = "Export termine."
+  renderHomeUI()
+}
+
+async function clearStore(store, keyField) {
+  const items = await idbGetAll(store)
+  for (const item of items) {
+    if (item && item[keyField] != null) {
+      await idbDel(store, item[keyField])
+    }
   }
 }
 
-async function handleProjectCreate() {
-  const title = window.prompt("Titre du projet")
-  if (!title) {
+async function handleBackupImport(file) {
+  if (!file) {
     return
   }
 
-  const result = await createProject(title.trim())
+  let parsed
+  try {
+    const text = await file.text()
+    parsed = JSON.parse(text)
+  } catch (error) {
+    state.backupStatus = "Import echoue."
+    renderHomeUI()
+    return
+  }
+
+  if (!parsed || parsed.version !== 1 || !parsed.data) {
+    state.backupStatus = "Import refuse (format)."
+    renderHomeUI()
+    return
+  }
+
+  const data = parsed.data
+  const projects = Array.isArray(data.projects) ? data.projects : null
+  const chapters = Array.isArray(data.chapters) ? data.chapters : null
+  const outbox = Array.isArray(data.outbox) ? data.outbox : []
+
+  if (!projects || !chapters) {
+    state.backupStatus = "Import refuse (donnees)."
+    renderHomeUI()
+    return
+  }
+
+  const existingProjects = await idbGetAll("projects")
+  const existingChapters = await idbGetAll("chapters")
+  const hasExisting = existingProjects.length > 0 || existingChapters.length > 0
+  if (hasExisting) {
+    const confirmed = window.confirm(
+      "Importer ce backup va remplacer les donnees locales. Continuer ?"
+    )
+    if (!confirmed) {
+      return
+    }
+  }
+
+  await clearStore("projects", "id")
+  await clearStore("chapters", "id")
+  await clearStore("outbox", "opId")
+  await upsertProjectsLocal(projects)
+  await upsertChaptersLocal(chapters)
+  for (const op of outbox) {
+    await idbPut("outbox", op)
+  }
+
+  state.backupStatus = "Import termine."
+  await loadLocalProjects({ allowFallback: false })
+  await updateLastChapterTitle()
+  renderHomeUI()
+}
+
+async function updateLastChapterTitle() {
+  const lastProjectId = getLastOpenedProjectId()
+  const lastChapterId = getLastOpenedChapterId()
+  if (!lastProjectId || !lastChapterId) {
+    state.lastChapterTitle = null
+    return
+  }
+
+  const chapter = await getLocalChapter(lastChapterId)
+  if (!chapter || chapter.project_id !== lastProjectId) {
+    state.lastChapterTitle = null
+    return
+  }
+
+  state.lastChapterTitle = chapter.title || "Sans titre"
+}
+
+async function ensureProjectAvailable(projectId) {
+  if (!projectId) {
+    return false
+  }
+
+  state.selectedProjectId = projectId
+  await loadLocalProjects({ allowFallback: false })
+
+  const hasProject = state.projects.some((project) => project.id === projectId)
+  if (hasProject) {
+    return true
+  }
+
+  await pullProjectsFromCloud()
+  await loadLocalProjects({ allowFallback: false })
+
+  return state.projects.some((project) => project.id === projectId)
+}
+
+async function loadEditorView(projectId) {
+  const hasProject = await ensureProjectAvailable(projectId)
+  if (!hasProject) {
+    window.location.hash = "#/home"
+    return
+  }
+
+  setLastOpenedProjectId(projectId)
+  state.statusText = ""
+  state.editingProjectId = state.editingProjectId === projectId ? projectId : null
+  await loadLocalChapters()
+  await loadLocalChapterDetail()
+  if (state.selectedChapterId) {
+    setLastOpenedChapterId(state.selectedChapterId)
+  }
+  await loadVersionsForChapter(state.selectedChapterId)
+  renderAppUI()
+
+  await pullChaptersFromCloud(projectId)
+  await loadLocalChapterDetail()
+  if (state.selectedChapterId) {
+    setLastOpenedChapterId(state.selectedChapterId)
+  }
+  await loadVersionsForChapter(state.selectedChapterId)
+  renderAppUI()
+}
+
+async function handleProjectCreate() {
+  const result = await createProject("Sans titre")
   if (!result.ok) {
     setStatus(`Erreur: ${result.errorMessage}`)
     return
   }
 
   await upsertProjectsLocal([result.data])
-  state.selectedProjectId = result.data.id
-  state.selectedChapterId = null
-  state.chapterDetail = null
-  state.versions = []
-
-  await loadLocalProjects()
-  await loadLocalChapters()
-  await loadLocalChapterDetail()
-  renderAppUI()
+  setLastOpenedProjectId(result.data.id)
+  state.editingProjectId = result.data.id
+  window.location.hash = `#/editor/${result.data.id}`
 }
 
 async function handleProjectSelect(id) {
@@ -226,21 +518,124 @@ async function handleProjectSelect(id) {
     return
   }
 
+  setLastOpenedProjectId(id)
+  state.editingProjectId = null
+  window.location.hash = `#/editor/${id}`
+}
+
+async function handleHomeProjectOpen(id) {
+  if (!id) {
+    return
+  }
+
+  setLastOpenedProjectId(id)
+  window.location.hash = `#/editor/${id}`
+}
+
+async function handleHomeProjectContinue() {
+  const lastProjectId = getLastOpenedProjectId()
+  if (!lastProjectId) {
+    return
+  }
+
+  window.location.hash = `#/editor/${lastProjectId}`
+}
+
+async function handleHomeProjectCreate() {
+  const result = await createProject("Sans titre")
+  if (!result.ok) {
+    setHomeMessage(`Erreur: ${result.errorMessage}`)
+    return
+  }
+
+  setHomeMessage("")
+  await upsertProjectsLocal([result.data])
+  setLastOpenedProjectId(result.data.id)
+  state.editingProjectId = result.data.id
+  window.location.hash = `#/editor/${result.data.id}`
+}
+
+async function handleHomeProjectDelete(id) {
+  if (!id) {
+    return
+  }
+
+  const project = state.projects.find((item) => item.id === id)
+  const title = project?.title ? `"${project.title}"` : "ce projet"
+  const confirmed = window.confirm(`Supprimer ${title} ? Cette action est definitive.`)
+  if (!confirmed) {
+    return
+  }
+
+  const result = await deleteProject(id)
+  if (!result.ok) {
+    setHomeMessage(`Erreur: ${result.errorMessage}`)
+    return
+  }
+
+  await deleteLocalProject(id)
+  await deleteLocalProjectChapters(id)
+  await loadLocalProjects({ allowFallback: false })
+
+  if (state.selectedProjectId === id) {
+    state.selectedProjectId = null
+    state.selectedChapterId = null
+    state.chapterDetail = null
+    state.chapters = []
+    state.versions = []
+  }
+
+  if (state.editingProjectId === id) {
+    state.editingProjectId = null
+  }
+
+  if (getLastOpenedProjectId() === id) {
+    setLastOpenedProjectId(null)
+  }
+
+  setHomeMessage("Projet supprime.")
+  renderHomeUI()
+}
+
+async function commitProjectRename(projectId, nextTitle) {
+  const title = nextTitle.trim() || "Sans titre"
+  const result = await renameProject(projectId, title)
+  if (!result.ok) {
+    setStatus(`Erreur: ${result.errorMessage}`)
+    return
+  }
+
+  await upsertProjectsLocal([result.data])
+  await loadLocalProjects({ allowFallback: false })
+  state.editingProjectId = null
+  renderAppUI()
+}
+
+async function handleChapterContentUpdate(content) {
+  if (!state.selectedChapterId) {
+    return
+  }
+
+  const updated = await saveLocalChapterDraft(state.selectedChapterId, {
+    content_md: content
+  })
+
+  state.chapterDetail = updated
+
+  const statusText = navigator.onLine ? "Synchronisation..." : "En attente (offline)"
+  setStatus(statusText)
+
   clearAutosaveTimer()
-  state.selectedProjectId = id
-  state.selectedChapterId = null
-  state.chapterDetail = null
-  state.versions = []
-  state.statusText = ""
+  const chapterId = state.selectedChapterId
 
-  await loadLocalChapters()
-  await loadLocalChapterDetail()
-  renderAppUI()
+  autosaveTimer = window.setTimeout(async () => {
+    await enqueueChapterUpsert(chapterId)
 
-  await pullChaptersFromCloud(id)
-  await loadLocalChapterDetail()
-  await loadVersionsForChapter(state.selectedChapterId)
-  renderAppUI()
+    if (navigator.onLine) {
+      const results = await syncOnce()
+      await handleSyncResults(results)
+    }
+  }, 1200)
 }
 
 async function handleChapterCreate() {
@@ -268,6 +663,7 @@ async function handleChapterCreate() {
 
   await upsertChaptersLocal([result.data])
   state.selectedChapterId = result.data.id
+  setLastOpenedChapterId(result.data.id)
 
   await loadLocalChapters()
   await loadLocalChapterDetail()
@@ -282,6 +678,7 @@ async function handleChapterSelect(id) {
 
   clearAutosaveTimer()
   state.selectedChapterId = id
+  setLastOpenedChapterId(id)
   state.statusText = ""
 
   await loadLocalChapterDetail()
@@ -419,9 +816,21 @@ async function handleProjectExport() {
   const projectTitle = project?.title ?? "Projet"
   const lines = [`# ${projectTitle}`, ""]
 
+  const toPlainText = (value) => {
+    if (!value) {
+      return ""
+    }
+    if (!/<[a-z][\s\S]*>/i.test(value)) {
+      return value
+    }
+    const container = document.createElement("div")
+    container.innerHTML = value
+    return container.textContent ?? ""
+  }
+
   for (const chapter of chapters) {
     lines.push(`## ${chapter.title ?? "Sans titre"}`)
-    lines.push(chapter.content_md ?? "")
+    lines.push(toPlainText(chapter.content_md ?? ""))
     lines.push("")
   }
 
@@ -522,8 +931,79 @@ app.addEventListener("click", async (event) => {
     return
   }
 
+  if (action === "nav-home") {
+    window.location.hash = "#/home"
+    return
+  }
+
+  if (action === "nav-editor") {
+    const targetId = actionTarget.dataset.id || getLastOpenedProjectId()
+    if (!targetId) {
+      return
+    }
+    window.location.hash = `#/editor/${targetId}`
+    return
+  }
+
   if (action === "project-create") {
     await handleProjectCreate()
+    return
+  }
+
+  if (action === "home-project-create") {
+    await handleHomeProjectCreate()
+    return
+  }
+
+  if (action === "home-project-open") {
+    await handleHomeProjectOpen(actionTarget.dataset.id)
+    return
+  }
+
+  if (action === "home-backup-export") {
+    await handleBackupExport()
+    return
+  }
+
+  if (action === "home-backup-import") {
+    const input = document.querySelector("#home-backup-file")
+    if (input) {
+      input.value = ""
+      input.click()
+    }
+    return
+  }
+
+  if (action === "home-cloud-save") {
+    await handleCloudSave()
+    return
+  }
+
+  if (action === "home-cloud-load") {
+    await handleCloudLoad()
+    return
+  }
+
+  if (action === "home-sign-out") {
+    const result = await signOut()
+    if (!result.ok) {
+      console.error(result.errorMessage)
+      setHomeMessage(`Erreur: ${result.errorMessage}`)
+      return
+    }
+    currentUserEmail = ""
+    setHomeMessage("")
+    renderHomeUI()
+    return
+  }
+
+  if (action === "home-project-delete") {
+    await handleHomeProjectDelete(actionTarget.dataset.id)
+    return
+  }
+
+  if (action === "home-project-continue") {
+    await handleHomeProjectContinue()
     return
   }
 
@@ -570,48 +1050,78 @@ app.addEventListener("click", async (event) => {
 app.addEventListener("input", async (event) => {
   const target = event.target
   if (target && target.id === "chapter-content") {
-    if (!state.selectedChapterId) {
-      return
+    await handleChapterContentUpdate(target.value)
+  }
+})
+
+app.addEventListener("change", async (event) => {
+  const target = event.target
+  if (!(target instanceof HTMLInputElement)) {
+    return
+  }
+
+  if (target.id !== "home-backup-file") {
+    return
+  }
+
+  const file = target.files?.[0] ?? null
+  await handleBackupImport(file)
+  target.value = ""
+})
+
+app.addEventListener("keydown", async (event) => {
+  const target = event.target
+  if (!(target instanceof HTMLInputElement)) {
+    return
+  }
+
+  if (!target.classList.contains("project-edit-input")) {
+    return
+  }
+
+  if (event.key === "Enter") {
+    event.preventDefault()
+    const projectId = target.dataset.id
+    if (projectId) {
+      await commitProjectRename(projectId, target.value)
     }
+    return
+  }
 
-    const updated = await saveLocalChapterDraft(state.selectedChapterId, {
-      content_md: target.value
-    })
-
-    state.chapterDetail = updated
-
-    const statusText = navigator.onLine ? "Synchronisation..." : "En attente (offline)"
-    setStatus(statusText)
-
-    clearAutosaveTimer()
-    const chapterId = state.selectedChapterId
-
-    autosaveTimer = window.setTimeout(async () => {
-      await enqueueChapterUpsert(chapterId)
-
-      if (navigator.onLine) {
-        const results = await syncOnce()
-        await handleSyncResults(results)
-      }
-    }, 1200)
+  if (event.key === "Escape") {
+    event.preventDefault()
+    state.editingProjectId = null
+    renderAppUI()
   }
 })
 
 async function render() {
   const { page, props } = await route()
+  clearAutosaveTimer()
 
-  if (page === "app") {
+  if (page === "editor") {
     currentUserEmail = props.userEmail
+    setCloudAutosaveActive(Boolean(currentUserEmail))
     if (!syncStarted) {
       startSyncLoop(handleSyncResults)
       syncStarted = true
     }
 
-    await loadAppView()
+    await loadEditorView(props.projectId)
+    return
+  }
+
+  unmountWritingView()
+
+  if (page === "home") {
+    currentUserEmail = props.userEmail
+    setCloudAutosaveActive(Boolean(currentUserEmail))
+    await loadHomeView()
     return
   }
 
   app.innerHTML = renderLogin({ message: props.message })
+  setCloudAutosaveActive(false)
 
   const signInButton = document.querySelector("#sign-in")
   const signUpButton = document.querySelector("#sign-up")
@@ -624,7 +1134,7 @@ async function render() {
         setMessage(result.errorMessage)
         return
       }
-      window.location.hash = "#app"
+      window.location.hash = "#/home"
     })
   }
 
