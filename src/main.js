@@ -50,7 +50,8 @@ const state = {
   lastCloudSaveAt: null,
   cloudStatus: "",
   cloudBusy: false,
-  backupStatus: ""
+  backupStatus: "",
+  homeStats: null
 }
 
 const SNAPSHOT_INTERVAL_MS = 5 * 60 * 1000
@@ -150,6 +151,7 @@ function renderHomeUI() {
     cloudStatus: state.cloudStatus,
     cloudBusy: state.cloudBusy,
     backupStatus: state.backupStatus,
+    homeStats: state.homeStats,
     homeMessage: state.homeMessage
   })
 }
@@ -286,13 +288,67 @@ async function loadHomeView() {
   state.editingProjectId = null
   state.lastCloudSaveAt = getLastCloudSaveAt()
   await loadLocalProjects()
+  await computeHomeStats()
   await updateLastChapterTitle()
   renderHomeUI()
 
   await pullProjectsFromCloud()
   await loadLocalProjects()
+  await computeHomeStats()
   await updateLastChapterTitle()
   renderHomeUI()
+}
+
+function countWords(text) {
+  const trimmed = text.trim()
+  if (!trimmed) {
+    return 0
+  }
+  const matches = trimmed.match(/\S+/g)
+  return matches ? matches.length : 0
+}
+
+function toPlainText(value) {
+  if (!value) {
+    return ""
+  }
+  if (!/<[a-z][\s\S]*>/i.test(value)) {
+    return value
+  }
+  const container = document.createElement("div")
+  container.innerHTML = value
+  return container.textContent ?? ""
+}
+
+async function computeHomeStats() {
+  const chapters = await idbGetAll("chapters")
+  const now = Date.now()
+  let totalWords = 0
+  let earliest = null
+
+  for (const chapter of chapters) {
+    const plain = toPlainText(chapter.content_md ?? "")
+    totalWords += countWords(plain)
+    const updatedAt = chapter.updated_local_at ?? null
+    if (updatedAt) {
+      earliest = earliest === null ? updatedAt : Math.min(earliest, updatedAt)
+    }
+  }
+
+  const days =
+    earliest === null ? 1 : Math.max(1, Math.ceil((now - earliest) / 86400000))
+  const wordsPerDay = totalWords ? Math.round(totalWords / days) : 0
+  const pagesTotal = totalWords ? Math.ceil(totalWords / 250) : 0
+  const pagesPerDay = pagesTotal ? pagesTotal / days : 0
+
+  state.homeStats = {
+    totalWords,
+    wordsPerDay,
+    pagesTotal,
+    pagesPerDay,
+    timeSpent: null,
+    timePerDay: null
+  }
 }
 
 async function handleCloudSave() {
@@ -328,6 +384,7 @@ async function handleCloudLoad() {
   const result = await loadFromCloud()
   if (result.ok) {
     await loadLocalProjects({ allowFallback: false })
+    await computeHomeStats()
     await updateLastChapterTitle()
     state.cloudStatus = "Chargement termine."
   } else {
@@ -433,6 +490,7 @@ async function handleBackupImport(file) {
 
   state.backupStatus = "Import termine."
   await loadLocalProjects({ allowFallback: false })
+  await computeHomeStats()
   await updateLastChapterTitle()
   renderHomeUI()
 }

@@ -72,6 +72,7 @@ export function renderHome({
   cloudStatus = "",
   cloudBusy = false,
   backupStatus = "",
+  homeStats = null,
   homeMessage = ""
 } = {}) {
   const hasProjects = projects.length > 0
@@ -82,6 +83,20 @@ export function renderHome({
   const lastCloudSaveLabel = lastCloudSaveAt
     ? formatDate(new Date(lastCloudSaveAt).toISOString())
     : "-"
+  const stats = homeStats ?? {
+    totalWords: 0,
+    wordsPerDay: 0,
+    pagesTotal: 0,
+    pagesPerDay: 0,
+    timeSpent: null,
+    timePerDay: null
+  }
+  const timeTotalLabel = stats.timeSpent ? stats.timeSpent : "—"
+  const timePerDayLabel = stats.timePerDay ? stats.timePerDay : "—"
+  const wordsTotalLabel = `${stats.totalWords} mots`
+  const wordsPerDayLabel = `${stats.wordsPerDay} mots par jour`
+  const pagesTotalLabel = `${stats.pagesTotal}`
+  const pagesPerDayLabel = `${stats.pagesPerDay.toFixed(1)} pages par jour`
 
   const projectCards = projects
     .map((project) => {
@@ -130,7 +145,7 @@ export function renderHome({
       `
 
   return `
-    <section class="page-shell">
+    <section class="page-shell home-shell">
       ${renderTopBar({ userEmail, activeRoute: "home", lastProjectId })}
       <div class="page dashboard">
         <div class="home-layout">
@@ -153,6 +168,32 @@ export function renderHome({
                   ? `<div class="project-grid">${projectCards}</div>`
                   : `<p class="muted">Aucun projet pour le moment.</p>`
               }
+            </section>
+            <section class="panel panel-card home-stats">
+              <div class="panel-header">
+                <h2>Vos statistiques d'ecriture</h2>
+                <span class="home-stats-note">Mises a jour tous les matins a 10h</span>
+              </div>
+              <div class="home-stats-card">
+                <div class="home-stats-col">
+                  <p class="home-stats-value">${timeTotalLabel}</p>
+                  <p class="home-stats-label">Temps passe a ecrire</p>
+                  <p class="home-stats-sub">${timePerDayLabel} par jour</p>
+                </div>
+                <div class="home-stats-divider"></div>
+                <div class="home-stats-col">
+                  <p class="home-stats-value">${wordsTotalLabel}</p>
+                  <p class="home-stats-label">Nombre total de mots</p>
+                  <p class="home-stats-sub">${wordsPerDayLabel}</p>
+                </div>
+                <div class="home-stats-divider"></div>
+                <div class="home-stats-col">
+                  <p class="home-stats-value">${pagesTotalLabel}</p>
+                  <p class="home-stats-label">Nombre total de pages</p>
+                  <p class="home-stats-hint">250 mots/page</p>
+                  <p class="home-stats-sub">${pagesPerDayLabel}</p>
+                </div>
+              </div>
             </section>
             <p id="home-message" class="message">${homeMessage}</p>
           </main>
