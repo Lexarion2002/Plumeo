@@ -274,7 +274,7 @@ function handleToolbarClick(event) {
     if (editorInstance.isActive("highlight")) {
       chain.unsetHighlight().run()
     } else {
-      chain.toggleHighlight({ color: "#fde68a" }).run()
+      chain.toggleHighlight({ color: "var(--token-highlight)" }).run()
     }
   } else if (command && command.startsWith("font-")) {
     const size = `${command.replace("font-", "")}px`

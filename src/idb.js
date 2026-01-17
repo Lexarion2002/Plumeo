@@ -1,5 +1,5 @@
 const DB_NAME = "writer_db"
-const DB_VERSION = 1
+const DB_VERSION = 3
 
 let dbPromise = null
 
@@ -21,6 +21,9 @@ function openDb() {
       }
       if (!db.objectStoreNames.contains("outbox")) {
         db.createObjectStore("outbox", { keyPath: "opId" })
+      }
+      if (!db.objectStoreNames.contains("characters")) {
+        db.createObjectStore("characters", { keyPath: "id" })
       }
     }
 

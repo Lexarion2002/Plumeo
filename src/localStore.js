@@ -93,6 +93,101 @@ export async function saveLocalChapterDraft(id, patch) {
   return next
 }
 
+
+export async function getLocalCharacters(projectId) {
+  const all = await idbGetAll("characters")
+  return all
+    .filter((character) => character.project_id === projectId)
+    .sort((a, b) => (a.created_at ?? 0) - (b.created_at ?? 0))
+}
+
+export async function createLocalCharacter(projectId) {
+  const now = Date.now()
+  const character = {
+    id: `${now}-${Math.random().toString(16).slice(2)}`,
+    project_id: projectId,
+    first_name: "",
+    last_name: "",
+    nickname: "",
+    pronouns: "",
+    sex: "",
+    race: "",
+    age: "",
+    birth_date: "",
+    birth_place: "",
+    residence: "",
+    occupation: "",
+    role_rating: 0,
+    avatar_url: "",
+    meta: {
+      physique: {
+        taille: "",
+        corpulence: "",
+        signes: "",
+        style: "",
+        image_url: ""
+      },
+      caractere: {
+        traits: "",
+        qualites: "",
+        defauts: "",
+        peurs: ""
+      },
+      profil: {
+        histoire: "",
+        objectifs: "",
+        relations: ""
+      },
+      evolution: {
+        arc: "",
+        changements: "",
+        etapes: ""
+      },
+      inventaire: {
+        items: ""
+      },
+      possession: {
+        biens: ""
+      },
+      autres: {
+        notes: ""
+      }
+    },
+    created_at: now,
+    updated_at: now
+  }
+
+  await idbPut("characters", character)
+  return character
+}
+
+export async function updateLocalCharacter(id, patch) {
+  const current = await idbGet("characters", id)
+  if (!current) {
+    return null
+  }
+
+  const next = {
+    ...current,
+    ...patch,
+    meta: {
+      ...(current.meta ?? {}),
+      ...(patch.meta ?? {})
+    },
+    updated_at: Date.now()
+  }
+
+  await idbPut("characters", next)
+  return next
+}
+
+export async function deleteLocalCharacter(id) {
+  if (!id) {
+    return
+  }
+  await idbDel("characters", id)
+}
+
 const LAST_PROJECT_KEY = "writer:lastProjectId"
 const LAST_CHAPTER_KEY = "writer:lastChapterId"
 const LAST_CLOUD_SAVE_KEY = "plumeo:lastCloudSaveAt"

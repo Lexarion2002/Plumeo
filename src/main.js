@@ -9,6 +9,7 @@ import {
   deleteProject,
   listChapters,
   createChapter,
+  updateChapter,
   fetchChapter,
   listVersions,
   createVersion
@@ -27,7 +28,10 @@ import {
   getLastCloudSaveAt,
   setLastCloudSaveAt,
   upsertProjectsLocal,
-  upsertChaptersLocal
+  upsertChaptersLocal,  getLocalCharacters,
+  createLocalCharacter,
+  updateLocalCharacter,
+  deleteLocalCharacter
 } from "./localStore.js"
 import { enqueueChapterUpsert, startSyncLoop, syncOnce } from "./sync.js"
 import { idbDel, idbGetAll, idbPut } from "./idb.js"
@@ -51,7 +55,24 @@ const state = {
   cloudStatus: "",
   cloudBusy: false,
   backupStatus: "",
-  homeStats: null
+  homeStats: null,
+  editorTab: "session",
+  writingNav: "chapter",
+  characters: [],
+  selectedCharacterId: null,
+  characterFilter: "",
+  characterSections: {
+    civil: true,
+    physique: false,
+    caractere: false,
+    profil: false,
+    evolution: false,
+    inventaire: false,
+    possession: false,
+    autres: false
+  },
+  accountMenuOpen: false,
+  backupMenuOpen: false
 }
 
 const SNAPSHOT_INTERVAL_MS = 5 * 60 * 1000
@@ -61,6 +82,9 @@ let autosaveTimer = null
 let cloudAutosaveTimer = null
 let syncStarted = false
 let currentUserEmail = ""
+let dragChapterId = null
+let dragOverChapterId = null
+const characterSaveTimers = new Map()
 
 function clearAutosaveTimer() {
   if (autosaveTimer) {
@@ -120,6 +144,13 @@ function setHomeMessage(text) {
 
 function renderAppUI() {
   unmountWritingView()
+  if (
+    state.writingNav === "characters" &&
+    !state.selectedCharacterId &&
+    state.characters.length
+  ) {
+    state.selectedCharacterId = state.characters[0].id
+  }
   app.innerHTML = renderApp({
     userEmail: currentUserEmail,
     projects: state.projects,
@@ -129,7 +160,18 @@ function renderAppUI() {
     selectedChapterId: state.selectedChapterId,
     chapterDetail: state.chapterDetail,
     versions: state.versions,
-    statusText: state.statusText
+    statusText: state.statusText,
+    editorTab: state.editorTab,
+    writingNav: state.writingNav,
+    characters: state.characters,
+    selectedCharacterId: state.selectedCharacterId,
+    characterFilter: state.characterFilter,
+    characterSections: state.characterSections,
+    lastCloudSaveAt: state.lastCloudSaveAt,
+    cloudBusy: state.cloudBusy,
+    accountMenuOpen: state.accountMenuOpen,
+    backupStatus: state.backupStatus,
+    backupMenuOpen: state.backupMenuOpen
   })
   renderProjectSelectionState()
 
@@ -152,14 +194,28 @@ function renderHomeUI() {
     cloudBusy: state.cloudBusy,
     backupStatus: state.backupStatus,
     homeStats: state.homeStats,
-    homeMessage: state.homeMessage
+    homeMessage: state.homeMessage,
+    accountMenuOpen: state.accountMenuOpen,
+    backupStatus: state.backupStatus,
+    backupMenuOpen: state.backupMenuOpen
   })
 }
 
+
+function renderCurrentUI() {
+  if (window.location.hash.startsWith("#/editor")) {
+    renderAppUI()
+    return
+  }
+  if (window.location.hash.startsWith("#/home")) {
+    renderHomeUI()
+  }
+}
+
+
 function renderProjectSelectionState() {
   const exportButton = document.querySelector("#project-export")
-  const exportHint = document.querySelector("#project-export-hint")
-  if (!exportButton || !exportHint) {
+  if (!exportButton) {
     return
   }
 
@@ -170,17 +226,6 @@ function renderProjectSelectionState() {
 
   exportButton.disabled = !hasProject
   exportButton.setAttribute("aria-disabled", hasProject ? "false" : "true")
-
-  if (hasProject) {
-    const projectTitle = project.title || "Sans titre"
-    const hint = `Exporter le projet "${projectTitle}" en Markdown.`
-    exportHint.textContent = hint
-    exportButton.setAttribute("aria-label", hint)
-  } else {
-    const hint = "Selectionne un projet pour exporter."
-    exportHint.textContent = hint
-    exportButton.setAttribute("aria-label", hint)
-  }
 }
 
 function getCredentials() {
@@ -238,6 +283,23 @@ async function loadLocalChapters() {
   }
 }
 
+async function loadLocalCharacters() {
+  if (!state.selectedProjectId) {
+    state.characters = []
+    state.selectedCharacterId = null
+    return
+  }
+
+  state.characters = await getLocalCharacters(state.selectedProjectId)
+  const hasSelected = state.characters.some(
+    (character) => character.id === state.selectedCharacterId
+  )
+
+  if (!hasSelected) {
+    state.selectedCharacterId = state.characters[0]?.id ?? null
+  }
+}
+
 async function loadLocalChapterDetail() {
   if (!state.selectedChapterId) {
     state.chapterDetail = null
@@ -284,19 +346,24 @@ async function pullChaptersFromCloud(projectId) {
   await loadLocalChapters()
 }
 
+async function loadInboxItems() {
+}
+
 async function loadHomeView() {
   state.editingProjectId = null
   state.lastCloudSaveAt = getLastCloudSaveAt()
   await loadLocalProjects()
+  await loadInboxItems()
   await computeHomeStats()
   await updateLastChapterTitle()
-  renderHomeUI()
+  renderCurrentUI()
 
   await pullProjectsFromCloud()
   await loadLocalProjects()
+  await loadInboxItems()
   await computeHomeStats()
   await updateLastChapterTitle()
-  renderHomeUI()
+  renderCurrentUI()
 }
 
 function countWords(text) {
@@ -351,13 +418,199 @@ async function computeHomeStats() {
   }
 }
 
+function getOrderedChapters() {
+  const indexed = state.chapters.map((chapter, index) => ({
+    chapter,
+    index
+  }))
+  return indexed
+    .sort((a, b) => {
+      const orderDiff = (a.chapter.order_index ?? 0) - (b.chapter.order_index ?? 0)
+      if (orderDiff !== 0) {
+        return orderDiff
+      }
+      return a.index - b.index
+    })
+    .map((item) => item.chapter)
+}
+
+async function persistChapterOrder(orderedChapters) {
+  // Use spaced integers (10, 20, 30...) to keep ordering stable and easy to reassign.
+  const changes = []
+  orderedChapters.forEach((chapter, index) => {
+    const nextOrder = (index + 1) * 10
+    if ((chapter.order_index ?? 0) !== nextOrder) {
+      changes.push({ chapter, order_index: nextOrder })
+    }
+  })
+
+  if (!changes.length) {
+    return
+  }
+
+  for (const change of changes) {
+    const updated = {
+      ...change.chapter,
+      order_index: change.order_index
+    }
+    await idbPut("chapters", updated)
+  }
+
+  state.chapters = orderedChapters.map((chapter) => {
+    const change = changes.find((item) => item.chapter.id === chapter.id)
+    if (!change) {
+      return chapter
+    }
+    return {
+      ...chapter,
+      order_index: change.order_index
+    }
+  })
+
+  if (navigator.onLine) {
+    await Promise.all(
+      changes.map((change) =>
+        updateChapter(change.chapter.id, { order_index: change.order_index })
+      )
+    )
+  }
+}
+
+async function handleChapterReorder(dragId, targetId) {
+  if (!dragId || !targetId || dragId === targetId) {
+    return
+  }
+
+  const ordered = getOrderedChapters()
+  const fromIndex = ordered.findIndex((chapter) => chapter.id === dragId)
+  const toIndex = ordered.findIndex((chapter) => chapter.id === targetId)
+  if (fromIndex === -1 || toIndex === -1) {
+    return
+  }
+
+  const next = [...ordered]
+  const [moved] = next.splice(fromIndex, 1)
+  next.splice(toIndex, 0, moved)
+
+  await persistChapterOrder(next)
+  renderAppUI()
+}
+
+async function refreshInbox() {
+  await loadInboxItems()
+  renderCurrentUI()
+}
+
+
+
+
+
+function getSelectedCharacter() {
+  return state.characters.find(
+    (character) => character.id === state.selectedCharacterId
+  )
+}
+
+async function handleCharacterCreate() {
+  if (!state.selectedProjectId) {
+    setStatus("Cree un projet avant d'ajouter un personnage.")
+    return
+  }
+
+  const created = await createLocalCharacter(state.selectedProjectId)
+  await loadLocalCharacters()
+  state.selectedCharacterId = created?.id ?? state.selectedCharacterId
+  renderAppUI()
+}
+
+async function handleCharacterSelect(id) {
+  if (!id || id === state.selectedCharacterId) {
+    return
+  }
+  state.selectedCharacterId = id
+  renderAppUI()
+}
+
+async function handleCharacterDelete(id) {
+  if (!id) {
+    return
+  }
+  const character = state.characters.find((item) => item.id === id)
+  const name = character?.first_name || character?.last_name
+    ? `${character?.first_name ?? ""} ${character?.last_name ?? ""}`.trim()
+    : "ce personnage"
+  const confirmed = window.confirm(`Supprimer ${name} ?`)
+  if (!confirmed) {
+    return
+  }
+  await deleteLocalCharacter(id)
+  await loadLocalCharacters()
+  renderAppUI()
+}
+
+function handleCharacterFilter(value) {
+  state.characterFilter = value
+  renderAppUI()
+}
+
+function handleCharacterSectionToggle(section) {
+  if (!section || !(section in state.characterSections)) {
+    return
+  }
+  state.characterSections = {
+    ...state.characterSections,
+    [section]: !state.characterSections[section]
+  }
+  renderAppUI()
+}
+
+async function handleCharacterRating(rating) {
+  const character = getSelectedCharacter()
+  if (!character) {
+    return
+  }
+  const nextRating = Math.max(0, Math.min(5, rating))
+  await updateLocalCharacter(character.id, { role_rating: nextRating })
+  await loadLocalCharacters()
+  renderAppUI()
+}
+
+function scheduleCharacterSave(id, patch) {
+  const key = id
+  if (characterSaveTimers.has(key)) {
+    clearTimeout(characterSaveTimers.get(key))
+  }
+  const timer = window.setTimeout(async () => {
+    await updateLocalCharacter(id, patch)
+    await loadLocalCharacters()
+    renderAppUI()
+  }, 400)
+  characterSaveTimers.set(key, timer)
+}
+
+function handleCharacterFieldUpdate(field, value, metaKey = null) {
+  const character = getSelectedCharacter()
+  if (!character) {
+    return
+  }
+  const patch = metaKey
+    ? { meta: { [metaKey]: { ...(character.meta?.[metaKey] ?? {}), [field]: value } } }
+    : { [field]: value }
+
+  scheduleCharacterSave(character.id, patch)
+}
+
+function handleCharacterWriteSideBySide() {
+  setStatus("Bientot disponible.")
+}
+
 async function handleCloudSave() {
   if (state.cloudBusy) {
     return
   }
   state.cloudBusy = true
   state.cloudStatus = "Sauvegarde..."
-  renderHomeUI()
+  renderCurrentUI()
 
   const result = await saveToCloud()
   if (result.ok) {
@@ -370,7 +623,7 @@ async function handleCloudSave() {
   }
 
   state.cloudBusy = false
-  renderHomeUI()
+  renderCurrentUI()
 }
 
 async function handleCloudLoad() {
@@ -379,7 +632,7 @@ async function handleCloudLoad() {
   }
   state.cloudBusy = true
   state.cloudStatus = "Chargement..."
-  renderHomeUI()
+  renderCurrentUI()
 
   const result = await loadFromCloud()
   if (result.ok) {
@@ -392,20 +645,22 @@ async function handleCloudLoad() {
   }
 
   state.cloudBusy = false
-  renderHomeUI()
+  renderCurrentUI()
 }
 
 async function handleBackupExport() {
   const projects = await idbGetAll("projects")
   const chapters = await idbGetAll("chapters")
   const outbox = await idbGetAll("outbox")
+  const characters = await idbGetAll("characters")
   const payload = {
     version: 1,
     exportedAt: new Date().toISOString(),
     data: {
       projects,
       chapters,
-      outbox
+      outbox,
+      characters
     }
   }
 
@@ -423,7 +678,7 @@ async function handleBackupExport() {
   URL.revokeObjectURL(url)
 
   state.backupStatus = "Export termine."
-  renderHomeUI()
+  renderCurrentUI()
 }
 
 async function clearStore(store, keyField) {
@@ -446,13 +701,13 @@ async function handleBackupImport(file) {
     parsed = JSON.parse(text)
   } catch (error) {
     state.backupStatus = "Import echoue."
-    renderHomeUI()
+    renderCurrentUI()
     return
   }
 
   if (!parsed || parsed.version !== 1 || !parsed.data) {
     state.backupStatus = "Import refuse (format)."
-    renderHomeUI()
+    renderCurrentUI()
     return
   }
 
@@ -460,10 +715,11 @@ async function handleBackupImport(file) {
   const projects = Array.isArray(data.projects) ? data.projects : null
   const chapters = Array.isArray(data.chapters) ? data.chapters : null
   const outbox = Array.isArray(data.outbox) ? data.outbox : []
+  const characters = Array.isArray(data.characters) ? data.characters : []
 
   if (!projects || !chapters) {
     state.backupStatus = "Import refuse (donnees)."
-    renderHomeUI()
+    renderCurrentUI()
     return
   }
 
@@ -482,17 +738,15 @@ async function handleBackupImport(file) {
   await clearStore("projects", "id")
   await clearStore("chapters", "id")
   await clearStore("outbox", "opId")
-  await upsertProjectsLocal(projects)
-  await upsertChaptersLocal(chapters)
-  for (const op of outbox) {
-    await idbPut("outbox", op)
+  for (const item of characters) {
+    await idbPut("characters", item)
   }
 
   state.backupStatus = "Import termine."
   await loadLocalProjects({ allowFallback: false })
   await computeHomeStats()
   await updateLastChapterTitle()
-  renderHomeUI()
+  renderCurrentUI()
 }
 
 async function updateLastChapterTitle() {
@@ -542,6 +796,7 @@ async function loadEditorView(projectId) {
   state.statusText = ""
   state.editingProjectId = state.editingProjectId === projectId ? projectId : null
   await loadLocalChapters()
+  await loadLocalCharacters()
   await loadLocalChapterDetail()
   if (state.selectedChapterId) {
     setLastOpenedChapterId(state.selectedChapterId)
@@ -551,6 +806,7 @@ async function loadEditorView(projectId) {
 
   await pullChaptersFromCloud(projectId)
   await loadLocalChapterDetail()
+  await loadLocalCharacters()
   if (state.selectedChapterId) {
     setLastOpenedChapterId(state.selectedChapterId)
   }
@@ -652,7 +908,7 @@ async function handleHomeProjectDelete(id) {
   }
 
   setHomeMessage("Projet supprime.")
-  renderHomeUI()
+  renderCurrentUI()
 }
 
 async function commitProjectRename(projectId, nextTitle) {
@@ -989,12 +1245,30 @@ app.addEventListener("click", async (event) => {
     return
   }
 
+  if (action === "backup-toggle") {
+    state.backupMenuOpen = !state.backupMenuOpen
+    state.accountMenuOpen = false
+    renderCurrentUI()
+    return
+  }
+
+  if (action === "account-toggle") {
+    state.accountMenuOpen = !state.accountMenuOpen
+    state.backupMenuOpen = false
+    renderCurrentUI()
+    return
+  }
+
   if (action === "nav-home") {
+    state.accountMenuOpen = false
+    state.backupMenuOpen = false
     window.location.hash = "#/home"
     return
   }
 
   if (action === "nav-editor") {
+    state.accountMenuOpen = false
+    state.backupMenuOpen = false
     const targetId = actionTarget.dataset.id || getLastOpenedProjectId()
     if (!targetId) {
       return
@@ -1019,11 +1293,13 @@ app.addEventListener("click", async (event) => {
   }
 
   if (action === "home-backup-export") {
+    state.backupMenuOpen = false
     await handleBackupExport()
     return
   }
 
   if (action === "home-backup-import") {
+    state.backupMenuOpen = false
     const input = document.querySelector("#home-backup-file")
     if (input) {
       input.value = ""
@@ -1033,16 +1309,19 @@ app.addEventListener("click", async (event) => {
   }
 
   if (action === "home-cloud-save") {
+    state.accountMenuOpen = false
     await handleCloudSave()
     return
   }
 
   if (action === "home-cloud-load") {
+    state.accountMenuOpen = false
     await handleCloudLoad()
     return
   }
 
   if (action === "home-sign-out") {
+    state.accountMenuOpen = false
     const result = await signOut()
     if (!result.ok) {
       console.error(result.errorMessage)
@@ -1051,7 +1330,7 @@ app.addEventListener("click", async (event) => {
     }
     currentUserEmail = ""
     setHomeMessage("")
-    renderHomeUI()
+    renderCurrentUI()
     return
   }
 
@@ -1064,6 +1343,10 @@ app.addEventListener("click", async (event) => {
     await handleHomeProjectContinue()
     return
   }
+
+
+
+
 
   if (action === "project-select") {
     await handleProjectSelect(actionTarget.dataset.id)
@@ -1103,11 +1386,174 @@ app.addEventListener("click", async (event) => {
   if (action === "version-restore") {
     await handleVersionRestore(actionTarget.dataset.id)
   }
+
+  if (action === "editor-tab") {
+    const nextTab = actionTarget.dataset.tab
+    if (nextTab && nextTab !== state.editorTab) {
+      state.editorTab = nextTab
+      renderAppUI()
+    }
+    return
+  }
+
+  if (action === "writing-nav") {
+    const nextNav = actionTarget.dataset.nav
+    if (nextNav && nextNav !== state.writingNav) {
+      state.writingNav = nextNav
+      renderAppUI()
+    }
+    return
+  }
+
+  if (action === "character-create") {
+    await handleCharacterCreate()
+    return
+  }
+
+  if (action === "character-select") {
+    await handleCharacterSelect(actionTarget.dataset.id)
+    return
+  }
+
+  if (action === "character-delete") {
+    await handleCharacterDelete(actionTarget.dataset.id)
+    return
+  }
+
+  if (action === "character-toggle") {
+    handleCharacterSectionToggle(actionTarget.dataset.section)
+    return
+  }
+
+  if (action === "character-rate") {
+    const rating = Number(actionTarget.dataset.rating)
+    if (Number.isFinite(rating)) {
+      await handleCharacterRating(rating)
+    }
+    return
+  }
+
+  if (action === "character-write") {
+    handleCharacterWriteSideBySide()
+    return
+  }
+
+  if (action === "character-avatar") {
+    const input = document.querySelector("#character-avatar-input")
+    if (input instanceof HTMLInputElement) {
+      input.value = ""
+      input.click()
+    }
+    return
+  }
+
+  if (action === "character-physique") {
+    const input = document.querySelector("#character-physique-input")
+    if (input instanceof HTMLInputElement) {
+      input.value = ""
+      input.click()
+    }
+    return
+  }
+})
+
+function clearChapterDragState() {
+  document
+    .querySelectorAll(".chapter-item.is-dragging, .chapter-item.is-drop-target")
+    .forEach((node) => node.classList.remove("is-dragging", "is-drop-target"))
+}
+
+app.addEventListener("dragstart", (event) => {
+  const target = event.target.closest(".chapter-item")
+  if (!target || !(event.dataTransfer instanceof DataTransfer)) {
+    return
+  }
+
+  dragChapterId = target.dataset.id || null
+  if (!dragChapterId) {
+    return
+  }
+
+  target.classList.add("is-dragging")
+  event.dataTransfer.effectAllowed = "move"
+  event.dataTransfer.setData("text/plain", dragChapterId)
+})
+
+app.addEventListener("dragover", (event) => {
+  const target = event.target.closest(".chapter-item")
+  if (!target || !dragChapterId) {
+    return
+  }
+
+  const targetId = target.dataset.id
+  if (!targetId || targetId === dragChapterId) {
+    return
+  }
+
+  event.preventDefault()
+  if (dragOverChapterId && dragOverChapterId !== targetId) {
+    const prev = document.querySelector(
+      `.chapter-item[data-id="${dragOverChapterId}"]`
+    )
+    if (prev) {
+      prev.classList.remove("is-drop-target")
+    }
+  }
+  dragOverChapterId = targetId
+  target.classList.add("is-drop-target")
+  if (event.dataTransfer) {
+    event.dataTransfer.dropEffect = "move"
+  }
+})
+
+app.addEventListener("drop", async (event) => {
+  const target = event.target.closest(".chapter-item")
+  if (!target || !dragChapterId) {
+    clearChapterDragState()
+    dragChapterId = null
+    dragOverChapterId = null
+    return
+  }
+
+  event.preventDefault()
+  const targetId = target.dataset.id
+  clearChapterDragState()
+  const currentDragId = dragChapterId
+  dragChapterId = null
+  dragOverChapterId = null
+
+  if (targetId) {
+    await handleChapterReorder(currentDragId, targetId)
+  }
+})
+
+app.addEventListener("dragend", () => {
+  clearChapterDragState()
+  dragChapterId = null
+  dragOverChapterId = null
 })
 
 app.addEventListener("input", async (event) => {
   const target = event.target
-  if (target && target.id === "chapter-content") {
+  if (!target) {
+    return
+  }
+
+  if (target.id === "character-filter") {
+    handleCharacterFilter(target.value)
+    return
+  }
+
+  if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) {
+    const field = target.dataset.characterField
+    const metaKey = target.dataset.characterMeta || null
+    if (field) {
+      handleCharacterFieldUpdate(field, target.value, metaKey)
+      return
+    }
+  }
+
+  if (target.id === "chapter-content") {
     await handleChapterContentUpdate(target.value)
   }
 })
@@ -1115,6 +1561,58 @@ app.addEventListener("input", async (event) => {
 app.addEventListener("change", async (event) => {
   const target = event.target
   if (!(target instanceof HTMLInputElement)) {
+    return
+  }
+
+  if (target.dataset.characterField) {
+    const field = target.dataset.characterField
+    const metaKey = target.dataset.characterMeta || null
+    handleCharacterFieldUpdate(field, target.value, metaKey)
+    return
+  }
+
+  if (target.id === "character-avatar-input") {
+    const file = target.files?.[0] ?? null
+    if (!file) {
+      return
+    }
+    const reader = new FileReader()
+    reader.onload = async () => {
+      const result = typeof reader.result === "string" ? reader.result : ""
+      const character = getSelectedCharacter()
+      if (character && result) {
+        await updateLocalCharacter(character.id, { avatar_url: result })
+        await loadLocalCharacters()
+        renderAppUI()
+      }
+    }
+    reader.readAsDataURL(file)
+    return
+  }
+
+  if (target.id === "character-physique-input") {
+    const file = target.files?.[0] ?? null
+    if (!file) {
+      return
+    }
+    const reader = new FileReader()
+    reader.onload = async () => {
+      const result = typeof reader.result === "string" ? reader.result : ""
+      const character = getSelectedCharacter()
+      if (character && result) {
+        const nextMeta = {
+          ...(character.meta ?? {}),
+          physique: {
+            ...(character.meta?.physique ?? {}),
+            image_url: result
+          }
+        }
+        await updateLocalCharacter(character.id, { meta: nextMeta })
+        await loadLocalCharacters()
+        renderAppUI()
+      }
+    }
+    reader.readAsDataURL(file)
     return
   }
 
@@ -1127,11 +1625,39 @@ app.addEventListener("change", async (event) => {
   target.value = ""
 })
 
+
+
+document.addEventListener("click", (event) => {
+  if (!state.accountMenuOpen) {
+    return
+  }
+  const target = event.target
+  if (target instanceof Element && (target.closest(".topbar-account") || target.closest(".topbar-backup"))) {
+    return
+  }
+  state.accountMenuOpen = false
+  state.backupMenuOpen = false
+  renderCurrentUI()
+})
+
+document.addEventListener("keydown", (event) => {
+  if (event.key !== "Escape") {
+    return
+  }
+  if (!state.accountMenuOpen && !state.backupMenuOpen) {
+    return
+  }
+  state.accountMenuOpen = false
+  state.backupMenuOpen = false
+  renderCurrentUI()
+})
+
 app.addEventListener("keydown", async (event) => {
   const target = event.target
   if (!(target instanceof HTMLInputElement)) {
     return
   }
+
 
   if (!target.classList.contains("project-edit-input")) {
     return
@@ -1158,6 +1684,8 @@ async function render() {
   clearAutosaveTimer()
 
   if (page === "editor") {
+    state.accountMenuOpen = false
+    state.backupMenuOpen = false
     currentUserEmail = props.userEmail
     setCloudAutosaveActive(Boolean(currentUserEmail))
     if (!syncStarted) {
@@ -1172,6 +1700,8 @@ async function render() {
   unmountWritingView()
 
   if (page === "home") {
+    state.accountMenuOpen = false
+    state.backupMenuOpen = false
     currentUserEmail = props.userEmail
     setCloudAutosaveActive(Boolean(currentUserEmail))
     await loadHomeView()
