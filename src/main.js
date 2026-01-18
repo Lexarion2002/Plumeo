@@ -20,6 +20,7 @@ import {
   getLocalChapter,
   deleteLocalProject,
   deleteLocalProjectChapters,
+  deleteLocalChapter,
   saveLocalChapterDraft,
   getLastOpenedProjectId,
   getLastOpenedChapterId,
@@ -39,6 +40,23 @@ import { mountWritingView, unmountWritingView } from "./writingView.js"
 import { loadFromCloud, saveToCloud } from "./cloud.js"
 
 const app = document.querySelector("#app")
+
+Object.entries({
+  "--layout-story-offset-x": "310px",
+  "--layout-story-offset-y": "0px",
+  "--layout-editor-width": "850px",
+  "--layout-editor-offset-x": "-9px",
+  "--layout-nav-offset-x": "322px",
+  "--layout-nav-offset-y": "0px",
+  "--layout-characters-list-x": "-124px",
+  "--layout-characters-list-y": "0px",
+  "--layout-characters-list-width": "220px",
+  "--layout-characters-detail-x": "107px",
+  "--layout-characters-detail-y": "0px",
+  "--layout-characters-detail-width": "880px"
+}).forEach(([key, value]) => {
+  document.documentElement.style.setProperty(key, value)
+})
 
 const state = {
   projects: [],
@@ -1009,6 +1027,46 @@ async function handleChapterSelect(id) {
   renderAppUI()
 }
 
+async function handleChapterDelete(id) {
+  if (!id || !state.selectedProjectId) {
+    return
+  }
+
+  if (state.cloudBusy) {
+    setStatus("Synchronisation en cours...")
+    return
+  }
+
+  const chapter = state.chapters.find((item) => item.id === id)
+  const title = chapter?.title?.trim() || "Sans titre"
+  const confirmed = window.confirm(
+    `Supprimer le chapitre "${title}" ? Cette action est irreversible.`
+  )
+  if (!confirmed) {
+    return
+  }
+
+  await deleteLocalChapter(id)
+
+  if (state.selectedChapterId === id) {
+    state.selectedChapterId = null
+    state.chapterDetail = null
+    state.versions = []
+  }
+
+  await loadLocalChapters()
+
+  if (state.selectedChapterId) {
+    setLastOpenedChapterId(state.selectedChapterId)
+    await loadLocalChapterDetail()
+    await loadVersionsForChapter(state.selectedChapterId)
+  } else {
+    setLastOpenedChapterId(null)
+  }
+
+  renderAppUI()
+}
+
 async function handleConflictReload() {
   if (!state.chapterDetail?.server_copy) {
     return
@@ -1365,6 +1423,11 @@ app.addEventListener("click", async (event) => {
 
   if (action === "chapter-select") {
     await handleChapterSelect(actionTarget.dataset.id)
+    return
+  }
+
+  if (action === "chapter-delete") {
+    await handleChapterDelete(actionTarget.dataset.id)
     return
   }
 

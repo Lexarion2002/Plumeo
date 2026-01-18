@@ -58,6 +58,13 @@ export async function getLocalChapter(id) {
   return idbGet("chapters", id)
 }
 
+export async function deleteLocalChapter(id) {
+  if (!id) {
+    return
+  }
+  await idbDel("chapters", id)
+}
+
 export async function deleteLocalProject(projectId) {
   if (!projectId) {
     return

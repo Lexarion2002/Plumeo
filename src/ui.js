@@ -294,6 +294,18 @@ export function renderApp({
           >
             ${chapter.title}
           </button>
+          <button
+            type="button"
+            class="chapter-delete"
+            data-action="chapter-delete"
+            data-id="${chapter.id}"
+            aria-label="Supprimer le chapitre"
+            title="Supprimer"
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M6 6l12 12M18 6L6 18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+            </svg>
+          </button>
         </li>
       `
     })
@@ -411,20 +423,7 @@ export function renderApp({
       </div>
     `
 
-  const historyPanel = hasChapterSelected
-    ? `
-      <details class="history" data-section="history">
-        <summary class="history-summary">Afficher / Masquer l'historique</summary>
-        <div class="history-body">
-          <div class="panel-header">
-            <h2>Historique</h2>
-            <button class="btn btn-primary" data-action="version-create" type="button">Snapshot maintenant</button>
-          </div>
-          ${versions.length ? `<ul class="version-list">${versionItems}</ul>` : `<p class="muted">Aucune version.</p>`}
-        </div>
-      </details>
-    `
-    : ""
+  const historyPanel = ""
 
   const exportButton = `
     <button
@@ -762,27 +761,28 @@ export function renderApp({
     `
 
   const characterPanel = `
-        <section class="panel card character-panel">
+        <section class="panel card character-panel characters-skin">
           <div class="character-shell">
-            <aside class="character-list">
-              <div class="character-list-header">
-                <h2>Personnages</h2>
-                <span class="character-count">${filteredCharacters.length} personnage${filteredCharacters.length === 1 ? "" : "s"}</span>
-                <div class="character-list-actions">
-                  <button type="button" class="character-primary" data-action="character-create">
-                    + Nouveau personnage
-                  </button>
-                  <input class="input" id="character-filter" type="text" placeholder="Rechercher un personnage..." value="${characterFilter}" />
+            <aside class="character-list characters-panel">
+              <div class="characters-panel__header">
+                <div class="characters-panel__title">
+                  Personnages <span class="characters-panel__count">· ${filteredCharacters.length}</span>
                 </div>
+                <button type="button" class="characters-panel__create btn btn-secondary btn-compact" data-action="character-create" aria-label="Nouveau personnage" title="Nouveau personnage">
+                  <span aria-hidden="true">+</span> Nouveau personnage
+                </button>
               </div>
-              <div class="character-items">
+              <div class="characters-panel__search">
+                <input class="input" id="character-filter" type="text" placeholder="Rechercher..." value="${characterFilter}" />
+              </div>
+              <div class="characters-list">
                 ${
                   filteredCharacters.length
                     ? filteredCharacters
                         .map((character) => {
                           const rawName = `${character.first_name ?? ""} ${character.last_name ?? ""}`.trim()
                           const hasName = Boolean(rawName)
-                          const displayName = hasName ? rawName : "Personnage sans nom"
+                          const displayName = hasName ? rawName : "Sans nom"
                           const initials = hasName
                             ? rawName
                                 .split(" ")
@@ -794,20 +794,35 @@ export function renderApp({
                           const itemAvatarSrc = character.avatar_url?.trim()
                             ? character.avatar_url.trim()
                             : "/character-placeholder.svg"
-                          const subtext = hasName ? "" : `<span class="character-subtext">Brouillon</span>`
+                          const subtext = hasName ? "" : `<span class="characters-item__meta">Brouillon</span>`
+                          const deleteLabel = hasName
+                            ? `Supprimer ${displayName}`
+                            : "Supprimer ce personnage"
                           return `
-                            <div class="character-item${character.id === effectiveSelectedId ? " is-active" : ""}" data-action="character-select" data-id="${character.id}">
+                            <div class="characters-item${character.id === effectiveSelectedId ? " is-active" : ""}" data-action="character-select" data-id="${character.id}">
                               <button
                                 type="button"
-                                class="character-item-main"
+                                class="characters-item__main"
                                 data-action="character-select"
                                 data-id="${character.id}"
                               >
-                                <span class="character-avatar">
+                                <span class="characters-item__avatar">
                                   <img src="${itemAvatarSrc}" alt="${initials}" />
                                 </span>
-                                <span class="character-name">${displayName}</span>
-                                ${subtext}
+                                <span class="characters-item__content">
+                                  <span class="characters-item__name">${displayName}</span>
+                                  ${subtext}
+                                </span>
+                              </button>
+                              <button
+                                type="button"
+                                class="characters-item__delete"
+                                data-action="character-delete"
+                                data-id="${character.id}"
+                                aria-label="${deleteLabel}"
+                                title="Supprimer"
+                              >
+                                <span aria-hidden="true">×</span>
                               </button>
                             </div>
                           `
@@ -860,6 +875,8 @@ export function renderApp({
           </section>
         </aside>
       `
+
+  const characterLayoutControls = ""
 
   return `
     <section class="page-shell writing-page">
@@ -974,6 +991,7 @@ export function renderApp({
         </main>
         </div>
         ${historyPanel}
+        
       </div>
     </section>
   `
