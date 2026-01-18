@@ -83,6 +83,17 @@ export async function deleteLocalProjectChapters(projectId) {
   }
 }
 
+export async function deleteLocalProjectInspiration(projectId) {
+  if (!projectId) {
+    return
+  }
+  const items = await idbGetAll("inspiration")
+  const targets = items.filter((item) => item.project_id === projectId)
+  for (const item of targets) {
+    await idbDel("inspiration", item.id)
+  }
+}
+
 export async function saveLocalChapterDraft(id, patch) {
   const current = await idbGet("chapters", id)
   const next = {
@@ -193,6 +204,55 @@ export async function deleteLocalCharacter(id) {
     return
   }
   await idbDel("characters", id)
+}
+
+export async function listInspirationItems(projectId) {
+  const all = await idbGetAll("inspiration")
+  return all
+    .filter((item) => item.project_id === projectId)
+    .sort((a, b) => (b.created_at ?? 0) - (a.created_at ?? 0))
+}
+
+export async function createInspirationItem(projectId, payload) {
+  const now = Date.now()
+  const item = {
+    id: `${now}-${Math.random().toString(16).slice(2)}`,
+    project_id: projectId,
+    type: payload.type,
+    title: payload.title ?? "",
+    note: payload.note ?? "",
+    tags: Array.isArray(payload.tags) ? payload.tags : [],
+    url: payload.url ?? "",
+    image_data: payload.image_data ?? "",
+    linkedChapterId: payload.linkedChapterId ?? "",
+    linkedCharacterId: payload.linkedCharacterId ?? "",
+    created_at: now,
+    updated_at: now
+  }
+  await idbPut("inspiration", item)
+  return item
+}
+
+export async function updateInspirationItem(id, patch) {
+  const current = await idbGet("inspiration", id)
+  if (!current) {
+    return null
+  }
+  const next = {
+    ...current,
+    ...patch,
+    tags: Array.isArray(patch.tags) ? patch.tags : current.tags ?? [],
+    updated_at: Date.now()
+  }
+  await idbPut("inspiration", next)
+  return next
+}
+
+export async function deleteInspirationItem(id) {
+  if (!id) {
+    return
+  }
+  await idbDel("inspiration", id)
 }
 
 const LAST_PROJECT_KEY = "writer:lastProjectId"

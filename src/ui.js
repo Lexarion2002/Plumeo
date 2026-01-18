@@ -1,3 +1,5 @@
+const ASSET_BASE = import.meta.env.BASE_URL || "/"
+
 export function renderLogin({ onSignIn, onSignUp, message = "" } = {}) {
   return `
     <section class="page">
@@ -236,12 +238,263 @@ export function renderHome({
             </div>
             <div class="home-hero-art" aria-hidden="true"></div>
           </section>
-          <p class="home-hero-footnote">Texte leger</p>
+          <section id="home-next" class="home-next" aria-hidden="true"></section>
+          <section id="home-analysis" class="home-analysis">
+            <div class="analysis-frame">
+              <div class="analysis-frame-header">
+                <h2 class="analysis-title">Analyse</h2>
+              </div>
+              <div class="analysis-frame-body">
+                <div class="home-analysis-left">
+                  <img
+                    class="home-analysis-illustration"
+                    src="${ASSET_BASE}assets/illustrations/analysis.png"
+                    alt="Illustration des statistiques d'ecriture"
+                    loading="lazy"
+                  />
+                </div>
+                <div class="home-analysis-right">
+                  <section class="home-analysis-card">
+                    <h3>Vos statistiques d'&eacute;criture</h3>
+                    <div class="home-analysis-kpis">
+                      <div class="home-analysis-kpi">
+                        <span class="home-analysis-kpi-label">Temps pass&eacute; &agrave; &eacute;crire</span>
+                        <span class="home-analysis-kpi-value">${stats.timeSpent ?? "--"}</span>
+                        <span class="home-analysis-kpi-meta">${stats.timePerDay ?? "--"} / jour</span>
+                      </div>
+                      <div class="home-analysis-kpi">
+                        <span class="home-analysis-kpi-label">Nombre total de mots</span>
+                        <span class="home-analysis-kpi-value">${wordsTotalLabel ?? "--"}</span>
+                        <span class="home-analysis-kpi-meta">${wordsPerDayLabel ?? "--"} / jour</span>
+                      </div>
+                      <div class="home-analysis-kpi">
+                        <span class="home-analysis-kpi-label">Nombre total de pages</span>
+                        <span class="home-analysis-kpi-value">${pagesTotalLabel ?? "--"}</span>
+                        <span class="home-analysis-kpi-meta">${pagesPerDayLabel ?? "--"} / jour</span>
+                      </div>
+                    </div>
+                  </section>
+                  <section class="home-analysis-card home-analysis-insight">
+                    <h3>Moment pr&eacute;f&eacute;r&eacute; pour &eacute;crire</h3>
+                    <div class="home-analysis-insight-visual"></div>
+                    <p class="home-analysis-insight-text">Moment pr&eacute;f&eacute;r&eacute; pour &eacute;crire : --</p>
+                  </section>
+                </div>
+              </div>
+            </div>
+          </section>
         </main>
       </div>
     </section>
   `
 }
+
+function normalizeText(value) {
+  return String(value || "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+}
+
+function getUrlDomain(value) {
+  try {
+    const url = new URL(value)
+    return url.hostname.replace(/^www\./, "")
+  } catch (error) {
+    return value
+  }
+}
+
+function renderInspirationTags(tags = []) {
+  if (!tags.length) {
+    return ""
+  }
+  const visible = tags.slice(0, 2)
+  const extra = tags.length - visible.length
+  const chips = visible
+    .map((tag) => `<span class="inspiration-tag">${tag}</span>`)
+    .join("")
+  const extraChip = extra > 0 ? `<span class="inspiration-tag">+${extra}</span>` : ""
+  return `<div class="inspiration-tags">${chips}${extraChip}</div>`
+}
+
+function renderInspirationPanel({
+  projectTitle = "-",
+  inspirationItems = [],
+  inspirationSearch = "",
+  inspirationTag = "",
+  inspirationModal = null,
+  inspirationDetailId = null,
+  chapters = [],
+  characters = []
+} = {}) {
+  const normalizedSearch = normalizeText(inspirationSearch)
+  const filtered = inspirationItems.filter((item) => {
+    const text = [
+      item.title,
+      item.note,
+      item.url,
+      ...(item.tags ?? [])
+    ]
+      .map((part) => normalizeText(part))
+      .join(" ")
+    const matchesSearch = normalizedSearch ? text.includes(normalizedSearch) : true
+    const matchesTag = inspirationTag ? (item.tags ?? []).includes(inspirationTag) : true
+    return matchesSearch && matchesTag
+  })
+  const tagOptions = Array.from(
+    new Set(inspirationItems.flatMap((item) => item.tags ?? []))
+  )
+
+  const cards = filtered.length
+    ? filtered
+        .map((item) => {
+          const isImage = item.type === "image"
+          const isVideo = item.type === "video"
+          const preview = isImage
+            ? `<img src="${item.image_data}" alt="" loading="lazy" />`
+            : `<div class="inspiration-preview-icon">
+                <span>${isVideo ? "Video" : "Lien"}</span>
+                <span class="inspiration-preview-domain">${getUrlDomain(item.url)}</span>
+              </div>`
+          const title = item.title?.trim() || getUrlDomain(item.url) || "Sans titre"
+          return `
+            <article class="inspiration-card" data-action="inspiration-open" data-id="${item.id}">
+              <div class="inspiration-preview${isImage ? " is-image" : ""}">
+                ${preview}
+              </div>
+              <div class="inspiration-card-body">
+                <h4 class="inspiration-card-title">${title}</h4>
+                ${renderInspirationTags(item.tags ?? [])}
+                <div class="inspiration-card-actions">
+                  <button type="button" class="btn btn-ghost" data-action="inspiration-edit" data-id="${item.id}">Modifier</button>
+                  <button type="button" class="btn btn-ghost" data-action="inspiration-delete" data-id="${item.id}">Supprimer</button>
+                </div>
+              </div>
+            </article>
+          `
+        })
+        .join("")
+    : `<p class="muted">Aucune inspiration pour ce projet.</p>`
+
+  const modalOpen = inspirationModal?.open
+  const modalStep = inspirationModal?.step ?? "type"
+  const modalType = inspirationModal?.type ?? ""
+  const modalDraft = inspirationModal?.draft ?? {}
+  const modalTitle = inspirationModal?.mode === "edit" ? "Modifier" : "Ajouter"
+  const imagePreview = modalDraft.image_data
+    ? `<div class="inspiration-preview is-image"><img src="${modalDraft.image_data}" alt="" /></div>`
+    : ""
+
+  const modalBody =
+    modalStep === "type"
+      ? `
+          <div class="inspiration-modal-options">
+            <button type="button" class="btn btn-secondary" data-action="inspiration-choose-type" data-type="image">Image</button>
+            <button type="button" class="btn btn-secondary" data-action="inspiration-choose-type" data-type="link">Lien</button>
+            <button type="button" class="btn btn-secondary" data-action="inspiration-choose-type" data-type="video">Video</button>
+          </div>
+        `
+      : `
+          <form class="inspiration-form">
+            ${modalType === "image" ? `<label class="field"><span>Image</span><input id="inspiration-image-input" type="file" accept="image/*" /></label>${imagePreview}` : ""}
+            ${modalType !== "image" ? `<label class="field"><span>URL</span><input id="inspiration-url" class="input" type="url" value="${modalDraft.url ?? ""}" placeholder="https://..." /></label>` : ""}
+            <label class="field"><span>Titre</span><input id="inspiration-title" class="input" type="text" value="${modalDraft.title ?? ""}" placeholder="Titre (optionnel)" /></label>
+            <label class="field"><span>Tags</span><input id="inspiration-tags" class="input" type="text" value="${(modalDraft.tags ?? []).join(", ")}" placeholder="tag1, tag2" /></label>
+            <label class="field"><span>Note</span><textarea id="inspiration-note" class="input" rows="3" placeholder="Note">${modalDraft.note ?? ""}</textarea></label>
+            <label class="field"><span>Lie a un chapitre</span>
+              <select id="inspiration-link-chapter" class="input">
+                <option value="">Aucun</option>
+                ${chapters
+                  .map((chapter) => `<option value="${chapter.id}" ${modalDraft.linkedChapterId === chapter.id ? "selected" : ""}>${chapter.title || "Sans titre"}</option>`)
+                  .join("")}
+              </select>
+            </label>
+            <label class="field"><span>Lie a un personnage</span>
+              <select id="inspiration-link-character" class="input">
+                <option value="">Aucun</option>
+                ${characters
+                  .map((character) => {
+                    const rawName = `${character.first_name ?? ""} ${character.last_name ?? ""}`.trim()
+                    const name = rawName || "Sans nom"
+                    return `<option value="${character.id}" ${modalDraft.linkedCharacterId === character.id ? "selected" : ""}>${name}</option>`
+                  })
+                  .join("")}
+              </select>
+            </label>
+          </form>
+        `
+
+  const modal = modalOpen
+    ? `
+        <div class="inspiration-modal-backdrop" role="dialog" aria-modal="true">
+          <div class="inspiration-modal">
+            <header class="inspiration-modal-header">
+              <h3>${modalTitle}</h3>
+            </header>
+            <div class="inspiration-modal-body">
+              ${modalBody}
+            </div>
+            <footer class="inspiration-modal-actions">
+              <button type="button" class="btn btn-ghost" data-action="inspiration-cancel">Annuler</button>
+              ${modalStep === "form" ? `<button type="button" class="btn btn-primary" data-action="inspiration-save">Enregistrer</button>` : ""}
+            </footer>
+          </div>
+        </div>
+      `
+    : ""
+
+  const detailItem = inspirationItems.find((item) => item.id === inspirationDetailId)
+  const detailView = detailItem
+    ? `
+        <div class="inspiration-modal-backdrop" role="dialog" aria-modal="true">
+          <div class="inspiration-modal">
+            <header class="inspiration-modal-header">
+              <h3>${detailItem.title || getUrlDomain(detailItem.url) || "Sans titre"}</h3>
+            </header>
+            <div class="inspiration-modal-body">
+              ${detailItem.type === "image"
+                ? `<div class="inspiration-preview is-image"><img src="${detailItem.image_data}" alt="" /></div>`
+                : `<div class="inspiration-preview">${getUrlDomain(detailItem.url)}</div>`}
+              ${detailItem.note ? `<p>${detailItem.note}</p>` : ""}
+              ${renderInspirationTags(detailItem.tags ?? [])}
+            </div>
+            <footer class="inspiration-modal-actions">
+              <button type="button" class="btn btn-ghost" data-action="inspiration-close">Fermer</button>
+              <button type="button" class="btn btn-secondary" data-action="inspiration-edit" data-id="${detailItem.id}">Modifier</button>
+              <button type="button" class="btn btn-danger" data-action="inspiration-delete" data-id="${detailItem.id}">Supprimer</button>
+            </footer>
+          </div>
+        </div>
+      `
+    : ""
+
+  return `
+    <section class="panel card inspiration-panel">
+      <header class="inspiration-header">
+        <div>
+          <h2>Inspiration — Projet : ${projectTitle}</h2>
+        </div>
+        <div class="inspiration-actions">
+          <button type="button" class="btn btn-primary" data-action="inspiration-add">+ Ajouter</button>
+          <input id="inspiration-search" class="input" type="text" placeholder="Rechercher..." value="${inspirationSearch}" />
+          <select id="inspiration-tag-filter" class="input">
+            <option value="">Tous les tags</option>
+            ${tagOptions
+              .map((tag) => `<option value="${tag}" ${tag === inspirationTag ? "selected" : ""}>${tag}</option>`)
+              .join("")}
+          </select>
+        </div>
+      </header>
+      <div class="inspiration-grid">
+        ${cards}
+      </div>
+      ${modal}
+      ${detailView}
+    </section>
+  `
+}
+
 export function renderApp({
   onSignOut,
   userEmail = "",
@@ -258,6 +511,11 @@ export function renderApp({
   characters = [],
   selectedCharacterId = null,
   characterFilter = "",
+  inspirationItems = [],
+  inspirationSearch = "",
+  inspirationTag = "",
+  inspirationModal = null,
+  inspirationDetailId = null,
   characterSections = {},
   lastCloudSaveAt = null,
   cloudBusy = false,
@@ -837,6 +1095,16 @@ export function renderApp({
           </div>
         </section>
       `
+  const inspirationPanel = renderInspirationPanel({
+    projectTitle: projectTitleLabel,
+    inspirationItems,
+    inspirationSearch,
+    inspirationTag,
+    inspirationModal,
+    inspirationDetailId,
+    chapters,
+    characters
+  })
   const chapterSidebar = `
         <aside class="writing-secondary">
           <section class="panel card story-panel">
@@ -922,6 +1190,15 @@ export function renderApp({
                 </span>
                 <span class="editor-sidebar__label">Documents</span>
               </button>
+              <button type="button" class="writing-nav-item editor-sidebar__item${writingNav === "inspiration" ? " is-active" : ""}" data-action="writing-nav" data-nav="inspiration" aria-label="Inspiration" title="Inspiration">
+                <span class="writing-nav-icon editor-sidebar__icon" aria-hidden="true">
+                  <svg viewBox="0 0 24 24">
+                    <path d="M12 3a6 6 0 0 0-3 11.2V17h6v-2.8A6 6 0 0 0 12 3z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>
+                    <path d="M9 21h6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+                  </svg>
+                </span>
+                <span class="editor-sidebar__label">Inspiration</span>
+              </button>
               <button type="button" class="writing-nav-item editor-sidebar__item${writingNav === "encyclopedia" ? " is-active" : ""}" data-action="writing-nav" data-nav="encyclopedia" aria-label="Encyclopedie" title="Encyclopedie">
                 <span class="writing-nav-icon editor-sidebar__icon" aria-hidden="true">
                   <svg viewBox="0 0 24 24">
@@ -977,6 +1254,8 @@ export function renderApp({
         ${
           writingNav === "characters"
             ? characterPanel
+            : writingNav === "inspiration"
+            ? inspirationPanel
             : `
             <section class="panel card editor ${hasChapterSelected ? "" : "is-disabled"}">
               <div class="panel-header">
@@ -996,6 +1275,9 @@ export function renderApp({
     </section>
   `
 }
+
+
+
 
 
 

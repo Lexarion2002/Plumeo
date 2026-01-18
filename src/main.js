@@ -20,6 +20,7 @@ import {
   getLocalChapter,
   deleteLocalProject,
   deleteLocalProjectChapters,
+  deleteLocalProjectInspiration,
   deleteLocalChapter,
   saveLocalChapterDraft,
   getLastOpenedProjectId,
@@ -29,10 +30,15 @@ import {
   getLastCloudSaveAt,
   setLastCloudSaveAt,
   upsertProjectsLocal,
-  upsertChaptersLocal,  getLocalCharacters,
+  upsertChaptersLocal,
+  getLocalCharacters,
   createLocalCharacter,
   updateLocalCharacter,
-  deleteLocalCharacter
+  deleteLocalCharacter,
+  listInspirationItems,
+  createInspirationItem,
+  updateInspirationItem,
+  deleteInspirationItem
 } from "./localStore.js"
 import { enqueueChapterUpsert, startSyncLoop, syncOnce } from "./sync.js"
 import { idbDel, idbGetAll, idbPut } from "./idb.js"
@@ -79,6 +85,16 @@ const state = {
   characters: [],
   selectedCharacterId: null,
   characterFilter: "",
+  inspirationItems: [],
+  inspirationSearch: "",
+  inspirationTag: "",
+  inspirationModal: {
+    open: false,
+    step: "type",
+    type: null,
+    draft: null
+  },
+  inspirationDetailId: null,
   characterSections: {
     civil: true,
     physique: false,
@@ -184,6 +200,11 @@ function renderAppUI() {
     characters: state.characters,
     selectedCharacterId: state.selectedCharacterId,
     characterFilter: state.characterFilter,
+    inspirationItems: state.inspirationItems,
+    inspirationSearch: state.inspirationSearch,
+    inspirationTag: state.inspirationTag,
+    inspirationModal: state.inspirationModal,
+    inspirationDetailId: state.inspirationDetailId,
     characterSections: state.characterSections,
     lastCloudSaveAt: state.lastCloudSaveAt,
     cloudBusy: state.cloudBusy,
@@ -217,6 +238,7 @@ function renderHomeUI() {
     backupStatus: state.backupStatus,
     backupMenuOpen: state.backupMenuOpen
   })
+
 }
 
 
@@ -316,6 +338,14 @@ async function loadLocalCharacters() {
   if (!hasSelected) {
     state.selectedCharacterId = state.characters[0]?.id ?? null
   }
+}
+
+async function loadLocalInspiration() {
+  if (!state.selectedProjectId) {
+    state.inspirationItems = []
+    return
+  }
+  state.inspirationItems = await listInspirationItems(state.selectedProjectId)
 }
 
 async function loadLocalChapterDetail() {
@@ -622,6 +652,155 @@ function handleCharacterWriteSideBySide() {
   setStatus("Bientot disponible.")
 }
 
+function parseTags(value) {
+  return String(value || "")
+    .split(",")
+    .map((tag) => tag.trim())
+    .filter(Boolean)
+}
+
+function openInspirationModal(step = "type", type = null, draft = null, mode = "create") {
+  state.inspirationModal = {
+    open: true,
+    step,
+    type,
+    mode,
+    draft
+  }
+  renderAppUI()
+}
+
+function closeInspirationModal() {
+  state.inspirationModal = {
+    open: false,
+    step: "type",
+    type: null,
+    mode: "create",
+    draft: null
+  }
+  renderAppUI()
+}
+
+function openInspirationDetail(id) {
+  state.inspirationDetailId = id
+  renderAppUI()
+}
+
+function closeInspirationDetail() {
+  state.inspirationDetailId = null
+  renderAppUI()
+}
+
+async function handleInspirationCreate() {
+  if (!state.selectedProjectId) {
+    setStatus("Cree un projet avant d'ajouter une inspiration.")
+    return
+  }
+  state.inspirationDetailId = null
+  openInspirationModal("type", null, { tags: [] }, "create")
+}
+
+function handleInspirationChooseType(type) {
+  if (!type) {
+    return
+  }
+  const draft = state.inspirationModal?.draft ?? { tags: [] }
+  openInspirationModal("form", type, { ...draft, type }, state.inspirationModal?.mode ?? "create")
+}
+
+async function handleInspirationSave() {
+  const modal = state.inspirationModal
+  if (!modal?.open || modal.step !== "form") {
+    return
+  }
+
+  const type = modal.type
+  const title = document.querySelector("#inspiration-title")?.value ?? ""
+  const note = document.querySelector("#inspiration-note")?.value ?? ""
+  const tagsValue = document.querySelector("#inspiration-tags")?.value ?? ""
+  const url = document.querySelector("#inspiration-url")?.value ?? ""
+  const linkedChapterId =
+    document.querySelector("#inspiration-link-chapter")?.value ?? ""
+  const linkedCharacterId =
+    document.querySelector("#inspiration-link-character")?.value ?? ""
+  const tags = parseTags(tagsValue)
+  const imageData = modal.draft?.image_data ?? ""
+
+  if (type === "image" && !imageData) {
+    window.alert("Ajoute une image avant d'enregistrer.")
+    return
+  }
+  if ((type === "link" || type === "video") && !url.trim()) {
+    window.alert("Ajoute une URL avant d'enregistrer.")
+    return
+  }
+
+  if (modal.mode === "edit" && modal.draft?.id) {
+    await updateInspirationItem(modal.draft.id, {
+      title,
+      note,
+      tags,
+      url,
+      image_data: imageData,
+      linkedChapterId,
+      linkedCharacterId
+    })
+  } else {
+    await createInspirationItem(state.selectedProjectId, {
+      type,
+      title,
+      note,
+      tags,
+      url,
+      image_data: imageData,
+      linkedChapterId,
+      linkedCharacterId
+    })
+  }
+
+  await loadLocalInspiration()
+  closeInspirationModal()
+}
+
+function handleInspirationSearch(value) {
+  state.inspirationSearch = value
+  renderAppUI()
+}
+
+function handleInspirationTagFilter(value) {
+  state.inspirationTag = value
+  renderAppUI()
+}
+
+async function handleInspirationDelete(id) {
+  const item = state.inspirationItems.find((entry) => entry.id === id)
+  if (!item) {
+    return
+  }
+  const label = item.title || item.url || "cet element"
+  const confirmed = window.confirm(`Supprimer ${label} ?`)
+  if (!confirmed) {
+    return
+  }
+  await deleteInspirationItem(id)
+  await loadLocalInspiration()
+  state.inspirationDetailId = null
+  renderAppUI()
+}
+
+function handleInspirationEdit(id) {
+  const item = state.inspirationItems.find((entry) => entry.id === id)
+  if (!item) {
+    return
+  }
+  state.inspirationDetailId = null
+  const draft = {
+    ...item,
+    tags: item.tags ?? []
+  }
+  openInspirationModal("form", item.type, draft, "edit")
+}
+
 async function handleCloudSave() {
   if (state.cloudBusy) {
     return
@@ -671,6 +850,7 @@ async function handleBackupExport() {
   const chapters = await idbGetAll("chapters")
   const outbox = await idbGetAll("outbox")
   const characters = await idbGetAll("characters")
+  const inspiration = await idbGetAll("inspiration")
   const payload = {
     version: 1,
     exportedAt: new Date().toISOString(),
@@ -678,7 +858,8 @@ async function handleBackupExport() {
       projects,
       chapters,
       outbox,
-      characters
+      characters,
+      inspiration
     }
   }
 
@@ -734,6 +915,7 @@ async function handleBackupImport(file) {
   const chapters = Array.isArray(data.chapters) ? data.chapters : null
   const outbox = Array.isArray(data.outbox) ? data.outbox : []
   const characters = Array.isArray(data.characters) ? data.characters : []
+  const inspiration = Array.isArray(data.inspiration) ? data.inspiration : []
 
   if (!projects || !chapters) {
     state.backupStatus = "Import refuse (donnees)."
@@ -756,8 +938,12 @@ async function handleBackupImport(file) {
   await clearStore("projects", "id")
   await clearStore("chapters", "id")
   await clearStore("outbox", "opId")
+  await clearStore("inspiration", "id")
   for (const item of characters) {
     await idbPut("characters", item)
+  }
+  for (const item of inspiration) {
+    await idbPut("inspiration", item)
   }
 
   state.backupStatus = "Import termine."
@@ -815,6 +1001,7 @@ async function loadEditorView(projectId) {
   state.editingProjectId = state.editingProjectId === projectId ? projectId : null
   await loadLocalChapters()
   await loadLocalCharacters()
+  await loadLocalInspiration()
   await loadLocalChapterDetail()
   if (state.selectedChapterId) {
     setLastOpenedChapterId(state.selectedChapterId)
@@ -825,6 +1012,7 @@ async function loadEditorView(projectId) {
   await pullChaptersFromCloud(projectId)
   await loadLocalChapterDetail()
   await loadLocalCharacters()
+  await loadLocalInspiration()
   if (state.selectedChapterId) {
     setLastOpenedChapterId(state.selectedChapterId)
   }
@@ -907,6 +1095,7 @@ async function handleHomeProjectDelete(id) {
 
   await deleteLocalProject(id)
   await deleteLocalProjectChapters(id)
+  await deleteLocalProjectInspiration(id)
   await loadLocalProjects({ allowFallback: false })
 
   if (state.selectedProjectId === id) {
@@ -1402,6 +1591,14 @@ app.addEventListener("click", async (event) => {
     return
   }
 
+  if (action === "home-scroll-next") {
+    const target = document.querySelector("#home-next")
+    if (target) {
+      target.scrollIntoView({ behavior: "smooth", block: "start" })
+    }
+    return
+  }
+
 
 
 
@@ -1463,8 +1660,58 @@ app.addEventListener("click", async (event) => {
     const nextNav = actionTarget.dataset.nav
     if (nextNav && nextNav !== state.writingNav) {
       state.writingNav = nextNav
+      if (nextNav !== "inspiration") {
+        state.inspirationDetailId = null
+        state.inspirationModal = {
+          open: false,
+          step: "type",
+          type: null,
+          mode: "create",
+          draft: null
+        }
+      }
       renderAppUI()
     }
+    return
+  }
+
+  if (action === "inspiration-add") {
+    await handleInspirationCreate()
+    return
+  }
+
+  if (action === "inspiration-choose-type") {
+    handleInspirationChooseType(actionTarget.dataset.type)
+    return
+  }
+
+  if (action === "inspiration-save") {
+    await handleInspirationSave()
+    return
+  }
+
+  if (action === "inspiration-cancel") {
+    closeInspirationModal()
+    return
+  }
+
+  if (action === "inspiration-open") {
+    openInspirationDetail(actionTarget.dataset.id)
+    return
+  }
+
+  if (action === "inspiration-close") {
+    closeInspirationDetail()
+    return
+  }
+
+  if (action === "inspiration-edit") {
+    handleInspirationEdit(actionTarget.dataset.id)
+    return
+  }
+
+  if (action === "inspiration-delete") {
+    await handleInspirationDelete(actionTarget.dataset.id)
     return
   }
 
@@ -1607,6 +1854,11 @@ app.addEventListener("input", async (event) => {
     return
   }
 
+  if (target.id === "inspiration-search") {
+    handleInspirationSearch(target.value)
+    return
+  }
+
   if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) {
     const field = target.dataset.characterField
     const metaKey = target.dataset.characterMeta || null
@@ -1631,6 +1883,39 @@ app.addEventListener("change", async (event) => {
     const field = target.dataset.characterField
     const metaKey = target.dataset.characterMeta || null
     handleCharacterFieldUpdate(field, target.value, metaKey)
+    return
+  }
+
+  if (target.id === "inspiration-tag-filter") {
+    handleInspirationTagFilter(target.value)
+    return
+  }
+
+  if (target.id === "inspiration-image-input") {
+    const file = target.files?.[0] ?? null
+    if (!file) {
+      return
+    }
+    const reader = new FileReader()
+    reader.onload = () => {
+      const result = typeof reader.result === "string" ? reader.result : ""
+      if (!result) {
+        return
+      }
+      const draft = state.inspirationModal?.draft ?? {}
+      state.inspirationModal = {
+        ...(state.inspirationModal ?? {}),
+        open: true,
+        step: "form",
+        type: "image",
+        draft: {
+          ...draft,
+          image_data: result
+        }
+      }
+      renderAppUI()
+    }
+    reader.readAsDataURL(file)
     return
   }
 
