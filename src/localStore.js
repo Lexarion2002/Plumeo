@@ -29,9 +29,20 @@ function buildChapterLocal(remote, existing) {
   }
 }
 
+function buildProjectLocal(remote, existing) {
+  const base = existing ?? {}
+  return {
+    ...base,
+    ...remote,
+    status: remote.status ?? base.status ?? "active"
+  }
+}
+
 export async function upsertProjectsLocal(projects) {
   for (const project of projects) {
-    await idbPut("projects", project)
+    const existing = await idbGet("projects", project.id)
+    const next = buildProjectLocal(project, existing)
+    await idbPut("projects", next)
   }
 }
 
@@ -72,6 +83,22 @@ export async function deleteLocalProject(projectId) {
   await idbDel("projects", projectId)
 }
 
+export async function updateLocalProject(projectId, patch) {
+  if (!projectId) {
+    return null
+  }
+  const current = await idbGet("projects", projectId)
+  if (!current) {
+    return null
+  }
+  const next = {
+    ...current,
+    ...patch
+  }
+  await idbPut("projects", next)
+  return next
+}
+
 export async function deleteLocalProjectChapters(projectId) {
   if (!projectId) {
     return
@@ -91,6 +118,22 @@ export async function deleteLocalProjectInspiration(projectId) {
   const targets = items.filter((item) => item.project_id === projectId)
   for (const item of targets) {
     await idbDel("inspiration", item.id)
+  }
+}
+
+export async function deleteLocalProjectMindmap(projectId) {
+  if (!projectId) {
+    return
+  }
+  const nodes = await idbGetAll("mindmap_nodes")
+  const edges = await idbGetAll("mindmap_edges")
+  const targetNodes = nodes.filter((node) => node.project_id === projectId)
+  const targetEdges = edges.filter((edge) => edge.project_id === projectId)
+  for (const node of targetNodes) {
+    await idbDel("mindmap_nodes", node.id)
+  }
+  for (const edge of targetEdges) {
+    await idbDel("mindmap_edges", edge.id)
   }
 }
 
@@ -136,6 +179,7 @@ export async function createLocalCharacter(projectId) {
     residence: "",
     occupation: "",
     role_rating: 0,
+    storyRole: "",
     avatar_url: "",
     meta: {
       physique: {
@@ -253,6 +297,134 @@ export async function deleteInspirationItem(id) {
     return
   }
   await idbDel("inspiration", id)
+}
+
+export async function listMindmap(projectId) {
+  const [nodes, edges] = await Promise.all([
+    idbGetAll("mindmap_nodes"),
+    idbGetAll("mindmap_edges")
+  ])
+  return {
+    nodes: nodes.filter((node) => node.project_id === projectId),
+    edges: edges.filter((edge) => edge.project_id === projectId)
+  }
+}
+
+export async function createMindmapNode(projectId, payload) {
+  const now = Date.now()
+  const node = {
+    id: `${now}-${Math.random().toString(16).slice(2)}`,
+    project_id: projectId,
+    title: payload.title ?? "Nouveau noeud",
+    type: payload.type ?? "note",
+    summary: payload.summary ?? "",
+    tags: Array.isArray(payload.tags) ? payload.tags : [],
+    x: Number.isFinite(payload.x) ? payload.x : 120,
+    y: Number.isFinite(payload.y) ? payload.y : 120,
+    linkedChapterId: payload.linkedChapterId ?? "",
+    linkedCharacterId: payload.linkedCharacterId ?? "",
+    created_at: now,
+    updated_at: now
+  }
+  await idbPut("mindmap_nodes", node)
+  return node
+}
+
+export async function updateMindmapNode(id, patch) {
+  const current = await idbGet("mindmap_nodes", id)
+  if (!current) {
+    return null
+  }
+  const next = {
+    ...current,
+    ...patch,
+    tags: Array.isArray(patch.tags) ? patch.tags : current.tags ?? [],
+    x: Number.isFinite(patch.x) ? patch.x : current.x ?? 0,
+    y: Number.isFinite(patch.y) ? patch.y : current.y ?? 0,
+    updated_at: Date.now()
+  }
+  await idbPut("mindmap_nodes", next)
+  return next
+}
+
+export async function deleteMindmapNode(id) {
+  if (!id) {
+    return
+  }
+  await idbDel("mindmap_nodes", id)
+  const edges = await idbGetAll("mindmap_edges")
+  const linked = edges.filter((edge) => edge.fromNodeId === id || edge.toNodeId === id)
+  for (const edge of linked) {
+    await idbDel("mindmap_edges", edge.id)
+  }
+}
+
+export async function createMindmapEdge(projectId, payload) {
+  const now = Date.now()
+  const edge = {
+    id: `${now}-${Math.random().toString(16).slice(2)}`,
+    project_id: projectId,
+    fromNodeId: payload.fromNodeId,
+    toNodeId: payload.toNodeId,
+    type: payload.type ?? "link",
+    created_at: now,
+    updated_at: now
+  }
+  await idbPut("mindmap_edges", edge)
+  return edge
+}
+
+export async function listIdeas({ projectId = null } = {}) {
+  const all = await idbGetAll("ideas")
+  const filtered = projectId
+    ? all.filter((idea) => idea.project_id === projectId)
+    : all
+  return filtered.sort((a, b) => (b.created_at ?? 0) - (a.created_at ?? 0))
+}
+
+export async function createIdea(payload) {
+  const now = Date.now()
+  const idea = {
+    id: `${now}-${Math.random().toString(16).slice(2)}`,
+    project_id: payload.project_id ?? null,
+    content: payload.content ?? "",
+    note: payload.note ?? "",
+    tags: Array.isArray(payload.tags) ? payload.tags : [],
+    status: payload.status ?? "raw",
+    created_at: now,
+    updated_at: now
+  }
+  await idbPut("ideas", idea)
+  return idea
+}
+
+export async function updateIdea(id, patch) {
+  const current = await idbGet("ideas", id)
+  if (!current) {
+    return null
+  }
+  const next = {
+    ...current,
+    ...patch,
+    tags: Array.isArray(patch.tags) ? patch.tags : current.tags ?? [],
+    updated_at: Date.now()
+  }
+  await idbPut("ideas", next)
+  return next
+}
+
+export async function deleteIdea(id) {
+  if (!id) {
+    return
+  }
+  await idbDel("ideas", id)
+}
+
+export async function deleteMindmapEdge(id) {
+  if (!id) {
+    return
+  }
+  await idbDel("mindmap_edges", id)
 }
 
 const LAST_PROJECT_KEY = "writer:lastProjectId"

@@ -1,5 +1,5 @@
 const DB_NAME = "writer_db"
-const DB_VERSION = 4
+const DB_VERSION = 6
 
 let dbPromise = null
 
@@ -27,6 +27,15 @@ function openDb() {
       }
       if (!db.objectStoreNames.contains("inspiration")) {
         db.createObjectStore("inspiration", { keyPath: "id" })
+      }
+      if (!db.objectStoreNames.contains("mindmap_nodes")) {
+        db.createObjectStore("mindmap_nodes", { keyPath: "id" })
+      }
+      if (!db.objectStoreNames.contains("mindmap_edges")) {
+        db.createObjectStore("mindmap_edges", { keyPath: "id" })
+      }
+      if (!db.objectStoreNames.contains("ideas")) {
+        db.createObjectStore("ideas", { keyPath: "id" })
       }
     }
 

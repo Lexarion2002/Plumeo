@@ -37,10 +37,28 @@ function formatDate(iso) {
   return date.toLocaleString()
 }
 
+function formatIdeaMetaDate(value) {
+  if (!value) {
+    return ""
+  }
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) {
+    return ""
+  }
+  const dayLabel = date.toLocaleDateString("fr-FR", {
+    day: "2-digit",
+    month: "short"
+  })
+  const timeLabel = date.toLocaleTimeString("fr-FR", {
+    hour: "2-digit",
+    minute: "2-digit"
+  })
+  return `${dayLabel} ${timeLabel}`
+}
+
 function renderTopBar({
   userEmail = "",
   activeRoute = "home",
-  editorProjectId = null,
   lastProjectId = null,
   lastCloudSaveAt = null,
   cloudBusy = false,
@@ -48,11 +66,8 @@ function renderTopBar({
   backupStatus = "",
   backupMenuOpen = false
 } = {}) {
-  const editorTarget = editorProjectId || lastProjectId
-  const editorDisabled = editorTarget ? "" : "disabled"
-  const editorTargetAttr = editorTarget ? `data-id="${editorTarget}"` : ""
   const homeActive = activeRoute === "home" ? " is-active" : ""
-  const editorActive = activeRoute === "editor" ? " is-active" : ""
+  const projectsActive = activeRoute === "projects" ? " is-active" : ""
   const backupActive = backupMenuOpen ? " is-active" : ""
   const accountActive = accountMenuOpen ? " is-active" : ""
   
@@ -101,7 +116,7 @@ const popover = accountMenuOpen
         <div class="topbar-right">
           <div class="topbar-nav">
             <button data-action="nav-home" type="button" class="topbar-pill${homeActive}">Accueil</button>
-            <button data-action="nav-editor" type="button" class="topbar-pill${editorActive}" ${editorTargetAttr} ${editorDisabled}>Editeur</button>
+            <button data-action="nav-projects" type="button" class="topbar-pill${projectsActive}">Projets</button>
           </div>
           <div class="topbar-backup">
             <button
@@ -192,7 +207,7 @@ export function renderHome({
               <span class="project-card-info">${createdLabel}</span>
             </div>
           </button>
-          <button class="project-card-delete" data-action="home-project-delete" data-id="${project.id}" type="button" aria-label="Supprimer le projet" title="Supprimer">
+          <button class="project-card-delete danger-hover" data-action="home-project-delete" data-id="${project.id}" type="button" aria-label="Supprimer le projet" title="Supprimer">
             Supprimer
           </button>
         </div>
@@ -289,6 +304,332 @@ export function renderHome({
   `
 }
 
+function renderIdeasContent({
+  ideas = [],
+  selectedIdeaId = null,
+  ideasQuery = "",
+  ideasTagFilter = "",
+  ideasStatusFilter = "all",
+  ideasSort = "desc",
+  draftIdeaText = "",
+  ideasFiltersOpen = false,
+  ideasDraftStatus = "",
+  ideasNoteExpanded = false
+} = {}) {
+  const selectedIdea = ideas.find((idea) => idea.id === selectedIdeaId) ?? null
+  const statusLabels = {
+    raw: "Brute",
+    used: "Exploitee",
+    abandoned: "Abandonnee"
+  }
+
+  const ideaItems = ideas
+    .map((idea) => {
+      const content = idea.content?.trim() || "Sans contenu"
+      const excerpt = content.length > 80 ? `${content.slice(0, 77)}...` : content
+      const createdLabel = formatIdeaMetaDate(idea.created_at)
+      const statusLabel = statusLabels[idea.status] ?? "Brute"
+      const statusHtml = `<span class="ideas-item__status status-${idea.status}">${statusLabel}</span>`
+      const tagCount = Array.isArray(idea.tags) ? idea.tags.length : 0
+      const tagLabel = tagCount === 1
+        ? `tags: ${idea.tags[0]}`
+        : tagCount > 1
+          ? `tags: +${tagCount}`
+          : ""
+      const metaParts = [
+        createdLabel,
+        statusHtml,
+        tagLabel
+      ].filter(Boolean)
+      return `
+        <button type="button" class="ideas-item${idea.id === selectedIdeaId ? " is-selected" : ""}" data-action="ideas-select" data-id="${idea.id}">
+          <span class="ideas-item__line1">${excerpt}</span>
+          <span class="ideas-item__meta">${metaParts.join(" · ")}</span>
+        </button>
+      `
+    })
+    .join("")
+
+  const noteValue = selectedIdea?.note ?? ""
+  const hasNote = Boolean(noteValue.trim())
+  const noteToggleLabel = ideasNoteExpanded
+    ? "Masquer la note"
+    : hasNote
+      ? "Afficher la note"
+      : "Ajouter une note"
+
+  const detailPanel = selectedIdea
+    ? `
+        <div class="ideas-detail-body">
+          <textarea
+            class="ideas-detail-input"
+            rows="8"
+            data-idea-field="content"
+            data-id="${selectedIdea.id}"
+            placeholder="Ecris ton idee..."
+          >${selectedIdea.content ?? ""}</textarea>
+          <div class="ideas-detail-meta">
+            <label class="ideas-meta-field">
+              <span>Statut</span>
+              <select class="input" data-idea-field="status" data-id="${selectedIdea.id}">
+                <option value="raw"${selectedIdea.status === "raw" ? " selected" : ""}>Brute</option>
+                <option value="used"${selectedIdea.status === "used" ? " selected" : ""}>Exploitee</option>
+                <option value="abandoned"${selectedIdea.status === "abandoned" ? " selected" : ""}>Abandonnee</option>
+              </select>
+            </label>
+            <label class="ideas-meta-field">
+              <span>Tags</span>
+              <input class="input" type="text" value="${(selectedIdea.tags ?? []).join(", ")}" data-idea-field="tags" data-id="${selectedIdea.id}" placeholder="tag1, tag2" />
+            </label>
+          </div>
+          <div class="ideas-detail-note">
+            <button type="button" class="btn btn-ghost ideas-note-toggle" data-action="ideas-note-toggle">
+              ${noteToggleLabel}
+            </button>
+            ${
+              ideasNoteExpanded
+                ? `<textarea class="input ideas-note-input" rows="3" data-idea-field="note" data-id="${selectedIdea.id}" placeholder="Note">${noteValue}</textarea>`
+                : ""
+            }
+          </div>
+          <div class="ideas-detail-footer">
+            <div class="ideas-detail-actions">
+              <button type="button" class="btn btn-secondary" disabled>Associer a un projet</button>
+              <button type="button" class="btn btn-secondary" disabled>Transformer en chapitre</button>
+            </div>
+            <button type="button" class="btn btn-danger ideas-delete danger-hover" data-action="ideas-delete" data-id="${selectedIdea.id}">Supprimer</button>
+          </div>
+        </div>
+      `
+    : `
+        <div class="ideas-detail-empty">
+          <h3>Selectionne une idee</h3>
+          <p>La idee apparaitra ici pour etre enrichie.</p>
+        </div>
+      `
+
+  const filtersPanel = ideasFiltersOpen
+    ? `
+        <div class="ideas-filters-panel" id="ideas-filters-panel">
+          <label class="field">
+            <span>Tag</span>
+            <input id="ideas-tag-filter" class="input" type="text" placeholder="Tag" value="${ideasTagFilter}" />
+          </label>
+          <label class="field">
+            <span>Statut</span>
+            <select id="ideas-status-filter" class="input">
+              <option value="all"${ideasStatusFilter === "all" ? " selected" : ""}>Tous</option>
+              <option value="raw"${ideasStatusFilter === "raw" ? " selected" : ""}>Brute</option>
+              <option value="used"${ideasStatusFilter === "used" ? " selected" : ""}>Exploitee</option>
+              <option value="abandoned"${ideasStatusFilter === "abandoned" ? " selected" : ""}>Abandonnee</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>Tri</span>
+            <select id="ideas-sort" class="input">
+              <option value="desc"${ideasSort === "desc" ? " selected" : ""}>Plus recentes</option>
+              <option value="asc"${ideasSort === "asc" ? " selected" : ""}>Plus anciennes</option>
+            </select>
+          </label>
+        </div>
+      `
+    : ""
+
+  return `
+    <section class="ideas-capture panel card">
+      <textarea
+        id="ideas-new-content"
+        class="input ideas-capture-input"
+        rows="4"
+        placeholder="Une phrase, une scene, un concept, une question..."
+        aria-label="Deposer une idee"
+      >${draftIdeaText ?? ""}</textarea>
+      <div class="ideas-capture-foot">
+        <span class="ideas-capture-hint">Enregistree automatiquement</span>
+        <span class="ideas-capture-status">${ideasDraftStatus}</span>
+      </div>
+    </section>
+
+    <section class="ideas-controls">
+      <div class="ideas-controls-main">
+        <input id="ideas-search" class="input" type="text" placeholder="Rechercher..." value="${ideasQuery}" />
+        <button
+          type="button"
+          class="btn btn-ghost ideas-filters-toggle"
+          data-action="ideas-filters-toggle"
+          aria-expanded="${ideasFiltersOpen ? "true" : "false"}"
+          aria-controls="ideas-filters-panel"
+        >
+          Filtres v
+        </button>
+      </div>
+      ${filtersPanel}
+    </section>
+
+    <div class="ideas-layout ideas-layout--master-detail">
+      <div class="ideas-list">
+        ${ideaItems || `<p class="ideas-empty">Ecris une premiere idee ci-dessus.</p>`}
+      </div>
+      <div class="ideas-detail">
+        ${detailPanel}
+      </div>
+    </div>
+  `
+}
+
+export function renderIdeas({
+  userEmail = "",
+  ideas = [],
+  selectedIdeaId = null,
+  ideasQuery = "",
+  ideasTagFilter = "",
+  ideasStatusFilter = "all",
+  ideasSort = "desc",
+  draftIdeaText = "",
+  ideasFiltersOpen = false,
+  ideasDraftStatus = "",
+  ideasNoteExpanded = false,
+  lastProjectId = null,
+  lastCloudSaveAt = null,
+  cloudBusy = false,
+  accountMenuOpen = false,
+  backupStatus = "",
+  backupMenuOpen = false
+} = {}) {
+  const ideasContent = renderIdeasContent({
+    ideas,
+    selectedIdeaId,
+    ideasQuery,
+    ideasTagFilter,
+    ideasStatusFilter,
+    ideasSort,
+    draftIdeaText,
+    ideasFiltersOpen,
+    ideasDraftStatus,
+    ideasNoteExpanded
+  })
+
+  return `
+    <section class="page ideas-page">
+      ${renderTopBar({ userEmail, activeRoute: "ideas", lastProjectId, lastCloudSaveAt, cloudBusy, accountMenuOpen, backupStatus, backupMenuOpen })}
+      <main class="ideas-content layout-container">
+        ${ideasContent}
+      </main>
+    </section>
+  `
+}
+
+export function renderProjects({
+  userEmail = "",
+  projects = [],
+  projectStats = {},
+  projectsMenuOpenId = null,
+  lastProjectId = null,
+  lastCloudSaveAt = null,
+  cloudBusy = false,
+  accountMenuOpen = false,
+  backupStatus = "",
+  backupMenuOpen = false
+} = {}) {
+  const hasProjects = projects.length > 0
+  const statusLabels = {
+    active: "Actif",
+    paused: "En pause",
+    done: "Termine",
+    archived: "Archive"
+  }
+  const cards = projects
+    .map((project) => {
+      const stats = projectStats[project.id] ?? {}
+      const updatedLabel = stats.updatedAt
+        ? formatIdeaMetaDate(stats.updatedAt)
+        : project.created_at
+          ? formatIdeaMetaDate(project.created_at)
+          : "—"
+      const chapterLabel = typeof stats.chapterCount === "number"
+        ? stats.chapterCount
+        : "—"
+      const wordLabel = typeof stats.wordCount === "number"
+        ? stats.wordCount
+        : "—"
+      const chapterText = chapterLabel === "—"
+        ? "—"
+        : `${chapterLabel} chapitre${chapterLabel === 1 ? "" : "s"}`
+      const wordText = wordLabel === "—"
+        ? "—"
+        : `${wordLabel} mot${wordLabel === 1 ? "" : "s"}`
+      const status = project.status ?? "active"
+      const statusLabel = statusLabels[status] ?? "Actif"
+      const isActive = project.id === lastProjectId
+      const activeBadge = isActive
+        ? `<span class="project-badge">Actif</span>`
+        : ""
+      const statusBadge = status !== "active"
+        ? `<span class="project-status status-${status}">${statusLabel}</span>`
+        : ""
+      const menuOpen = projectsMenuOpenId === project.id
+      const menu = menuOpen
+        ? `
+            <div class="project-menu" role="menu" aria-label="Actions projet">
+              <button type="button" class="project-menu-item" data-action="projects-rename" data-id="${project.id}">Renommer</button>
+              <button type="button" class="project-menu-item" data-action="projects-status" data-id="${project.id}" data-status="active">Actif</button>
+              <button type="button" class="project-menu-item" data-action="projects-status" data-id="${project.id}" data-status="paused">En pause</button>
+              <button type="button" class="project-menu-item" data-action="projects-status" data-id="${project.id}" data-status="done">Termine</button>
+              <button type="button" class="project-menu-item" data-action="projects-status" data-id="${project.id}" data-status="archived">Archive</button>
+              <button type="button" class="project-menu-item danger-hover" data-action="projects-delete" data-id="${project.id}">Supprimer</button>
+            </div>
+          `
+        : ""
+      return `
+        <article
+          class="project-card project-card--projects${isActive ? " is-active" : ""}"
+          data-action="projects-open"
+          data-id="${project.id}"
+          role="button"
+          tabindex="0"
+        >
+          <div class="project-card-main">
+            <div class="project-card-title">
+              <h3>${project.title ?? "Sans titre"}</h3>
+              ${activeBadge}
+              ${statusBadge}
+            </div>
+            <div class="project-card-meta">
+              <span class="project-card-info">Derniere modification : ${updatedLabel} · ${chapterText} · ${wordText}</span>
+            </div>
+          </div>
+          <div class="project-card-actions">
+            <button class="project-menu-toggle" type="button" data-action="projects-menu-toggle" data-id="${project.id}" aria-haspopup="menu" aria-expanded="${menuOpen ? "true" : "false"}" aria-label="Menu projet">⋯</button>
+            ${menu}
+          </div>
+        </article>
+      `
+    })
+    .join("")
+
+  const emptyState = `
+      <div class="projects-empty">
+        <p>Aucun projet pour le moment.</p>
+        <button class="btn btn-secondary" data-action="projects-create" type="button">+ Nouveau projet</button>
+      </div>
+    `
+
+  return `
+    <section class="page projects-page">
+      ${renderTopBar({ userEmail, activeRoute: "projects", lastProjectId, lastCloudSaveAt, cloudBusy, accountMenuOpen, backupStatus, backupMenuOpen })}
+      <main class="projects-content layout-container">
+        <header class="projects-header">
+          <h2>Projets</h2>
+          <button class="btn btn-secondary" data-action="projects-create" type="button">+ Nouveau projet</button>
+        </header>
+        <section class="projects-grid">
+          ${hasProjects ? cards : emptyState}
+        </section>
+      </main>
+    </section>
+  `
+}
+
 function normalizeText(value) {
   return String(value || "")
     .toLowerCase()
@@ -368,7 +709,7 @@ function renderInspirationPanel({
                 ${renderInspirationTags(item.tags ?? [])}
                 <div class="inspiration-card-actions">
                   <button type="button" class="btn btn-ghost" data-action="inspiration-edit" data-id="${item.id}">Modifier</button>
-                  <button type="button" class="btn btn-ghost" data-action="inspiration-delete" data-id="${item.id}">Supprimer</button>
+                  <button type="button" class="btn btn-ghost danger-hover" data-action="inspiration-delete" data-id="${item.id}">Supprimer</button>
                 </div>
               </div>
             </article>
@@ -376,6 +717,9 @@ function renderInspirationPanel({
         })
         .join("")
     : `<p class="muted">Aucune inspiration pour ce projet.</p>`
+
+  const totalCount = inspirationItems.length
+  const countLabel = `${totalCount} inspiration${totalCount > 1 ? "s" : ""}`
 
   const modalOpen = inspirationModal?.open
   const modalStep = inspirationModal?.step ?? "type"
@@ -462,7 +806,7 @@ function renderInspirationPanel({
             <footer class="inspiration-modal-actions">
               <button type="button" class="btn btn-ghost" data-action="inspiration-close">Fermer</button>
               <button type="button" class="btn btn-secondary" data-action="inspiration-edit" data-id="${detailItem.id}">Modifier</button>
-              <button type="button" class="btn btn-danger" data-action="inspiration-delete" data-id="${detailItem.id}">Supprimer</button>
+              <button type="button" class="btn btn-danger danger-hover" data-action="inspiration-delete" data-id="${detailItem.id}">Supprimer</button>
             </footer>
           </div>
         </div>
@@ -470,20 +814,27 @@ function renderInspirationPanel({
     : ""
 
   return `
-    <section class="panel card inspiration-panel">
+    <section class="panel inspiration-panel">
       <header class="inspiration-header">
-        <div>
-          <h2>Inspiration — Projet : ${projectTitle}</h2>
+        <div class="inspiration-header-main">
+          <h2 class="inspiration-title">Inspiration — Projet : ${projectTitle}</h2>
+          <span class="inspiration-count">${countLabel}</span>
         </div>
         <div class="inspiration-actions">
-          <button type="button" class="btn btn-primary" data-action="inspiration-add">+ Ajouter</button>
-          <input id="inspiration-search" class="input" type="text" placeholder="Rechercher..." value="${inspirationSearch}" />
-          <select id="inspiration-tag-filter" class="input">
-            <option value="">Tous les tags</option>
-            ${tagOptions
-              .map((tag) => `<option value="${tag}" ${tag === inspirationTag ? "selected" : ""}>${tag}</option>`)
-              .join("")}
-          </select>
+          <button type="button" class="btn btn-primary inspiration-create" data-action="inspiration-add">+ Ajouter</button>
+          <label class="inspiration-field" for="inspiration-search">
+            <span>Rechercher</span>
+            <input id="inspiration-search" class="input" type="text" placeholder="Rechercher..." value="${inspirationSearch}" />
+          </label>
+          <label class="inspiration-field" for="inspiration-tag-filter">
+            <span>Tags</span>
+            <select id="inspiration-tag-filter" class="input">
+              <option value="">Tous les tags</option>
+              ${tagOptions
+                .map((tag) => `<option value="${tag}" ${tag === inspirationTag ? "selected" : ""}>${tag}</option>`)
+                .join("")}
+            </select>
+          </label>
         </div>
       </header>
       <div class="inspiration-grid">
@@ -491,6 +842,222 @@ function renderInspirationPanel({
       </div>
       ${modal}
       ${detailView}
+    </section>
+  `
+}
+
+
+function renderMindmapPanel({
+  projectTitle = "-",
+  nodes = [],
+  edges = [],
+  selectedNodeId = null,
+  mode = "select",
+  linkSourceId = null,
+  search = "",
+  createType = "note",
+  linkTypeMenu = null,
+  flashNodeId = null,
+  view = { offsetX: 0, offsetY: 0, scale: 1 },
+  chapters = [],
+  characters = []
+} = {}) {
+  const nodeWidth = 180
+  const nodeHeight = 64
+  const selectedNode = nodes.find((node) => node.id === selectedNodeId) || null
+
+  const normalizedSearch = normalizeText(search)
+  const visibleNodes = normalizedSearch
+    ? nodes.filter((node) => {
+        const haystack = [
+          node.title,
+          node.summary,
+          ...(node.tags ?? [])
+        ]
+          .filter(Boolean)
+          .join(" ")
+        return normalizeText(haystack).includes(normalizedSearch)
+      })
+    : nodes
+
+  const visibleIds = new Set(visibleNodes.map((node) => node.id))
+
+  const edgeLabels = {
+    linked: "lie a",
+    conflict: "conflit",
+    appears: "apparait dans",
+    cause: "cause-consequence"
+  }
+
+  const edgesMarkup = edges
+    .filter((edge) => visibleIds.has(edge.fromNodeId) && visibleIds.has(edge.toNodeId))
+    .map((edge) => {
+      const fromNode = nodes.find((node) => node.id === edge.fromNodeId)
+      const toNode = nodes.find((node) => node.id === edge.toNodeId)
+      if (!fromNode || !toNode) {
+        return ""
+      }
+      const x1 = fromNode.x + nodeWidth / 2
+      const y1 = fromNode.y + nodeHeight / 2
+      const x2 = toNode.x + nodeWidth / 2
+      const y2 = toNode.y + nodeHeight / 2
+      const label = edgeLabels[edge.type] ?? edge.type ?? ""
+      const mx = (x1 + x2) / 2
+      const my = (y1 + y2) / 2
+      return `
+        <line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" />
+        ${label ? `<text x="${mx}" y="${my}" class="mindmap-edge-label">${label}</text>` : ""}
+      `
+    })
+    .join("")
+
+  const typeLabels = {
+    chapter: "Chapitre",
+    character: "Personnage",
+    place: "Lieu",
+    theme: "Theme",
+    event: "Evenement",
+    note: "Idee"
+  }
+
+  const nodesMarkup = visibleNodes
+    .map((node) => {
+      const isActive = node.id === selectedNodeId
+      const isSource = node.id === linkSourceId
+      const isFlash = node.id === flashNodeId
+      const typeLabel = typeLabels[node.type] ?? "Idee"
+      return `
+        <button
+          type="button"
+          class="mindmap-node node--${node.type}${isActive ? " is-active" : ""}${isSource ? " is-source" : ""}${isFlash ? " is-flash" : ""}"
+          data-action="mindmap-node"
+          data-id="${node.id}"
+          style="transform: translate(${node.x}px, ${node.y}px);"
+          aria-label="${node.title}"
+        >
+          <span class="mindmap-node-title">${node.title}</span>
+          <span class="mindmap-node-type">${typeLabel}</span>
+        </button>
+      `
+    })
+    .join("")
+
+  const chapterOptions = (selectedId) =>
+    chapters
+      .map((chapter) => {
+        const selected = chapter.id === selectedId ? "selected" : ""
+        return `<option value="${chapter.id}" ${selected}>${chapter.title || "Sans titre"}</option>`
+      })
+      .join("")
+  const characterOptions = (selectedId) =>
+    characters
+      .map((character) => {
+        const rawName = `${character.first_name ?? ""} ${character.last_name ?? ""}`.trim()
+        const name = rawName || "Sans nom"
+        const selected = character.id === selectedId ? "selected" : ""
+        return `<option value="${character.id}" ${selected}>${name}</option>`
+      })
+      .join("")
+
+  const detailPanel = selectedNode
+    ? `
+      <aside class="mindmap-sidebar">
+        <header class="mindmap-sidebar-header">
+          <h3>${selectedNode.title}</h3>
+          <button type="button" class="btn btn-ghost danger-hover" data-action="mindmap-delete-node" data-id="${selectedNode.id}">Supprimer</button>
+        </header>
+        <div class="mindmap-sidebar-body">
+          <label class="field"><span>Titre</span>
+            <input class="input" type="text" value="${selectedNode.title}" data-mindmap-field="title" data-id="${selectedNode.id}" />
+          </label>
+          <label class="field"><span>Type</span>
+            <select class="input" data-mindmap-field="type" data-id="${selectedNode.id}">
+              ${["chapter", "character", "place", "theme", "event", "note"]
+                .map((value) => `<option value="${value}" ${value === selectedNode.type ? "selected" : ""}>${value}</option>`)
+                .join("")}
+            </select>
+          </label>
+          <label class="field"><span>Resume</span>
+            <textarea class="input" rows="3" data-mindmap-field="summary" data-id="${selectedNode.id}">${selectedNode.summary ?? ""}</textarea>
+          </label>
+          <label class="field"><span>Tags</span>
+          <input class="input" type="text" value="${(selectedNode.tags ?? []).join(", ")}" data-mindmap-field="tags" data-id="${selectedNode.id}" placeholder="tag1, tag2" />
+          </label>
+          <label class="field"><span>Lier un chapitre</span>
+            <select class="input" data-mindmap-field="linkedChapterId" data-id="${selectedNode.id}">
+              <option value="">Aucun</option>
+              ${chapterOptions(selectedNode.linkedChapterId)}
+            </select>
+          </label>
+          <label class="field"><span>Lier un personnage</span>
+            <select class="input" data-mindmap-field="linkedCharacterId" data-id="${selectedNode.id}">
+              <option value="">Aucun</option>
+              ${characterOptions(selectedNode.linkedCharacterId)}
+            </select>
+          </label>
+          ${(selectedNode.linkedChapterId || selectedNode.linkedCharacterId)
+            ? `<button type="button" class="btn btn-secondary" data-action="mindmap-open-source" data-id="${selectedNode.id}">Ouvrir la source</button>`
+            : ""}
+        </div>
+      </aside>
+    `
+    : `
+      <aside class="mindmap-sidebar">
+        <div class="mindmap-empty">
+          <h3>Carte mentale</h3>
+          <ul>
+            <li>Double-clique pour creer un noeud</li>
+            <li>Glisse un noeud pour le deplacer</li>
+            <li>Relie deux noeuds pour creer un lien</li>
+          </ul>
+          <p>Utilise la carte pour voir la structure, pas pour ecrire tout le texte.</p>
+        </div>
+      </aside>
+    `
+
+  const linkMenu = linkTypeMenu?.open
+    ? `
+        <div class="mindmap-link-menu" style="transform: translate(${linkTypeMenu.x}px, ${linkTypeMenu.y}px);">
+          <button type="button" data-action="mindmap-link-type" data-type="linked">lie a</button>
+          <button type="button" data-action="mindmap-link-type" data-type="conflict">conflit</button>
+          <button type="button" data-action="mindmap-link-type" data-type="appears">apparait dans</button>
+          <button type="button" data-action="mindmap-link-type" data-type="cause">cause-consequence</button>
+          <button type="button" data-action="mindmap-link-cancel">valider</button>
+        </div>
+      `
+    : ""
+
+  return `
+    <section class="panel card mindmap-panel">
+      <header class="mindmap-toolbar">
+        <div class="mindmap-toolbar-left">
+          <h2>Carte mentale — Projet : ${projectTitle}</h2>
+          <p class="mindmap-subtitle">Visualise la structure de ton recit</p>
+        </div>
+        <div class="mindmap-toolbar-actions">
+          <button type="button" class="btn btn-primary" data-action="mindmap-add-node">+ Noeud</button>
+          <select id="mindmap-create-type" class="input" data-action="mindmap-create-type">
+            ${["chapter", "character", "place", "theme", "event", "note"]
+              .map((value) => `<option value="${value}" ${value === createType ? "selected" : ""}>${typeLabels[value]}</option>`)
+              .join("")}
+          </select>
+          <button type="button" class="btn btn-secondary${mode === "link" ? " is-active" : ""}" data-action="mindmap-link-mode">+ Lien</button>
+          <input class="input" type="text" id="mindmap-search" placeholder="Rechercher..." value="${search}" />
+          <button type="button" class="btn btn-ghost" data-action="mindmap-reset" title="Centrer la carte sur l'ensemble des noeuds">Recentrer</button>
+        </div>
+      </header>
+      <div class="mindmap-body">
+        <div class="mindmap-canvas" data-action="mindmap-canvas">
+          <div class="mindmap-viewport" style="transform: translate(${view.offsetX}px, ${view.offsetY}px) scale(${view.scale});">
+            <svg class="mindmap-edges" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+              ${edgesMarkup}
+            </svg>
+            ${nodesMarkup}
+            ${linkMenu}
+          </div>
+        </div>
+        ${detailPanel}
+      </div>
     </section>
   `
 }
@@ -516,6 +1083,26 @@ export function renderApp({
   inspirationTag = "",
   inspirationModal = null,
   inspirationDetailId = null,
+  ideas = [],
+  selectedIdeaId = null,
+  ideasQuery = "",
+  ideasTagFilter = "",
+  ideasStatusFilter = "all",
+  ideasSort = "desc",
+  draftIdeaText = "",
+  ideasFiltersOpen = false,
+  ideasDraftStatus = "",
+  ideasNoteExpanded = false,
+  mindmapNodes = [],
+  mindmapEdges = [],
+  mindmapSelectedNodeId = null,
+  mindmapMode = "select",
+  mindmapLinkSourceId = null,
+  mindmapSearch = "",
+  mindmapCreateType = "note",
+  mindmapLinkTypeMenu = null,
+  mindmapFlashNodeId = null,
+  mindmapView = { offsetX: 0, offsetY: 0, scale: 1 },
   characterSections = {},
   lastCloudSaveAt = null,
   cloudBusy = false,
@@ -531,6 +1118,14 @@ export function renderApp({
     : null
   const projectTitle = activeProject?.title ?? "Sans titre"
   const projectTitleLabel = hasProjectSelected ? projectTitle : "-"
+  const writingContextLabel =
+    {
+      chapter: "Ecriture",
+      characters: "Personnages",
+      inspiration: "Inspiration",
+      mindmap: "Carte mentale",
+      ideas: "Idees"
+    }[writingNav] ?? "Ecriture"
   const chapterIndex = hasChapterSelected
     ? chapters.findIndex((chapter) => chapter.id === selectedChapterId) + 1
     : 0
@@ -554,7 +1149,7 @@ export function renderApp({
           </button>
           <button
             type="button"
-            class="chapter-delete"
+            class="chapter-delete danger-hover"
             data-action="chapter-delete"
             data-id="${chapter.id}"
             aria-label="Supprimer le chapitre"
@@ -760,17 +1355,10 @@ export function renderApp({
     ? activeCharacter.avatar_url.trim()
     : "/character-placeholder.svg"
 
-  const summaryParts = []
-  if (activeCharacter?.age || activeCharacter?.birth_place) {
-    const ageLabel = activeCharacter?.age ? `${activeCharacter.age} ans` : ""
-    const birthLabel = activeCharacter?.birth_place
-      ? `ne a ${activeCharacter.birth_place}`
-      : ""
-    summaryParts.push([ageLabel, birthLabel].filter(Boolean).join(", "))
-  }
-  if (activeCharacter?.residence) {
-    summaryParts.push(activeCharacter.residence)
-  }
+  const ageLabel = activeCharacter?.age ? `${activeCharacter.age} ans` : ""
+  const placeLabel = (activeCharacter?.residence ?? "").trim()
+    || (activeCharacter?.birth_place ?? "").trim()
+  const contextLine = [ageLabel, placeLabel].filter(Boolean).join(" — ")
 
   const roleRating = Math.max(0, Math.min(5, Number(activeCharacter?.role_rating ?? 0)))
 
@@ -801,9 +1389,7 @@ export function renderApp({
           <input id="character-avatar-input" type="file" accept="image/*" hidden />
           <div class="character-hero-info">
             <h3>${characterName}</h3>
-            <ul>
-              ${summaryParts.length ? summaryParts.map((item) => `<li>${item}</li>`).join("") : "<li class=\"muted\">Resume a completer.</li>"}
-            </ul>
+            ${contextLine ? `<div class="character-meta">${contextLine}</div>` : ""}
           </div>
             <div class="character-hero-meta">
               <p>Role :</p>
@@ -950,6 +1536,19 @@ export function renderApp({
             characterSections.profil
           )}
           ${renderSection(
+            "storyRole",
+            "Role dans l'histoire",
+            `
+              <div class="character-grid">
+                <label class="character-inline">
+                  <span>Role dans l'histoire</span>
+                  <textarea data-character-field="storyRole" placeholder="Decris la fonction narrative du personnage...">${activeCharacter.storyRole ?? ""}</textarea>
+                </label>
+              </div>
+            `,
+            characterSections.storyRole
+          )}
+          ${renderSection(
             "evolution",
             "Evolution",
             `
@@ -1074,7 +1673,7 @@ export function renderApp({
                               </button>
                               <button
                                 type="button"
-                                class="characters-item__delete"
+                                class="characters-item__delete danger-hover"
                                 data-action="character-delete"
                                 data-id="${character.id}"
                                 aria-label="${deleteLabel}"
@@ -1105,6 +1704,39 @@ export function renderApp({
     chapters,
     characters
   })
+  const mindmapPanel = renderMindmapPanel({
+    projectTitle: projectTitleLabel,
+    nodes: mindmapNodes,
+    edges: mindmapEdges,
+    selectedNodeId: mindmapSelectedNodeId,
+    mode: mindmapMode,
+    linkSourceId: mindmapLinkSourceId,
+    search: mindmapSearch,
+    createType: mindmapCreateType,
+    linkTypeMenu: mindmapLinkTypeMenu,
+    flashNodeId: mindmapFlashNodeId,
+    view: mindmapView,
+    chapters,
+    characters
+  })
+  const ideasPanel = `
+        <section class="ideas-panel">
+          <div class="ideas-content ideas-content--embedded">
+            ${renderIdeasContent({
+              ideas,
+              selectedIdeaId,
+              ideasQuery,
+              ideasTagFilter,
+              ideasStatusFilter,
+              ideasSort,
+              draftIdeaText,
+              ideasFiltersOpen,
+              ideasDraftStatus,
+              ideasNoteExpanded
+            })}
+          </div>
+        </section>
+      `
   const chapterSidebar = `
         <aside class="writing-secondary">
           <section class="panel card story-panel">
@@ -1148,8 +1780,15 @@ export function renderApp({
 
   return `
     <section class="page-shell writing-page">
-      ${renderTopBar({ userEmail, activeRoute: "editor", editorProjectId: selectedProjectId, lastCloudSaveAt, cloudBusy, accountMenuOpen, backupStatus, backupMenuOpen })}
+      ${renderTopBar({ userEmail, activeRoute: "projects", lastProjectId: selectedProjectId, lastCloudSaveAt, cloudBusy, accountMenuOpen, backupStatus, backupMenuOpen })}
       <div class="page app-shell">
+        <div class="writing-context">
+          <span>Projets</span>
+          <span class="writing-context-sep">></span>
+          <span>${projectTitleLabel}</span>
+          <span class="writing-context-sep">></span>
+          <span>${writingContextLabel}</span>
+        </div>
         <div class="writing-layout${writingNav === "chapter" ? " with-chapter" : ""}">
         <aside class="writing-sidebar editor-sidebar">
           <section class="panel card writing-nav">
@@ -1173,23 +1812,6 @@ export function renderApp({
                 </span>
                 <span class="editor-sidebar__label">Personnages</span>
               </button>
-              <button type="button" class="writing-nav-item editor-sidebar__item${writingNav === "structure" ? " is-active" : ""}" data-action="writing-nav" data-nav="structure" aria-label="Structurer son recit" title="Structurer son recit">
-                <span class="writing-nav-icon editor-sidebar__icon" aria-hidden="true">
-                  <svg viewBox="0 0 24 24">
-                    <path d="M6 4h12v4H6zM6 10h12v10H6z" fill="none" stroke="currentColor" stroke-width="1.6"/>
-                  </svg>
-                </span>
-                <span class="editor-sidebar__label">Structurer son recit</span>
-              </button>
-              <button type="button" class="writing-nav-item editor-sidebar__item${writingNav === "documents" ? " is-active" : ""}" data-action="writing-nav" data-nav="documents" aria-label="Documents" title="Documents">
-                <span class="writing-nav-icon editor-sidebar__icon" aria-hidden="true">
-                  <svg viewBox="0 0 24 24">
-                    <path d="M6 4h9l3 3v13H6z" fill="none" stroke="currentColor" stroke-width="1.6"/>
-                    <path d="M9 11h6M9 15h6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
-                  </svg>
-                </span>
-                <span class="editor-sidebar__label">Documents</span>
-              </button>
               <button type="button" class="writing-nav-item editor-sidebar__item${writingNav === "inspiration" ? " is-active" : ""}" data-action="writing-nav" data-nav="inspiration" aria-label="Inspiration" title="Inspiration">
                 <span class="writing-nav-icon editor-sidebar__icon" aria-hidden="true">
                   <svg viewBox="0 0 24 24">
@@ -1199,23 +1821,14 @@ export function renderApp({
                 </span>
                 <span class="editor-sidebar__label">Inspiration</span>
               </button>
-              <button type="button" class="writing-nav-item editor-sidebar__item${writingNav === "encyclopedia" ? " is-active" : ""}" data-action="writing-nav" data-nav="encyclopedia" aria-label="Encyclopedie" title="Encyclopedie">
+              <button type="button" class="writing-nav-item editor-sidebar__item${writingNav === "ideas" ? " is-active" : ""}" data-action="writing-nav" data-nav="ideas" aria-label="Idees" title="Idees">
                 <span class="writing-nav-icon editor-sidebar__icon" aria-hidden="true">
                   <svg viewBox="0 0 24 24">
-                    <path d="M6 4h12v16H6z" fill="none" stroke="currentColor" stroke-width="1.6"/>
-                    <path d="M9 7h6M9 11h6M9 15h4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+                    <path d="M6 4h9l3 3v13H6z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>
+                    <path d="M15 4v3h3" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
                   </svg>
                 </span>
-                <span class="editor-sidebar__label">Encyclopedie</span>
-              </button>
-              <button type="button" class="writing-nav-item editor-sidebar__item${writingNav === "images" ? " is-active" : ""}" data-action="writing-nav" data-nav="images" aria-label="Generateur d'images" title="Generateur d'images">
-                <span class="writing-nav-icon editor-sidebar__icon" aria-hidden="true">
-                  <svg viewBox="0 0 24 24">
-                    <rect x="4" y="6" width="16" height="12" rx="2" fill="none" stroke="currentColor" stroke-width="1.6"/>
-                    <path d="M8 10l3 3 5-5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
-                  </svg>
-                </span>
-                <span class="editor-sidebar__label">Generateur d'images</span>
+                <span class="editor-sidebar__label">Idees</span>
               </button>
               <button type="button" class="writing-nav-item editor-sidebar__item${writingNav === "mindmap" ? " is-active" : ""}" data-action="writing-nav" data-nav="mindmap" aria-label="Carte mentale" title="Carte mentale">
                 <span class="writing-nav-icon editor-sidebar__icon" aria-hidden="true">
@@ -1227,35 +1840,22 @@ export function renderApp({
                 </span>
                 <span class="editor-sidebar__label">Carte mentale</span>
               </button>
-              <button type="button" class="writing-nav-item editor-sidebar__item${writingNav === "appendix" ? " is-active" : ""}" data-action="writing-nav" data-nav="appendix" aria-label="Luminaires & Annexes" title="Luminaires & Annexes">
-                <span class="writing-nav-icon editor-sidebar__icon" aria-hidden="true">
-                  <svg viewBox="0 0 24 24">
-                    <path d="M6 5h9a3 3 0 0 1 3 3v11H6z" fill="none" stroke="currentColor" stroke-width="1.6"/>
-                    <path d="M6 8h12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
-                  </svg>
-                </span>
-                <span class="editor-sidebar__label">Luminaires &amp; Annexes</span>
-              </button>
-              <button type="button" class="writing-nav-item editor-sidebar__item${writingNav === "goals" ? " is-active" : ""}" data-action="writing-nav" data-nav="goals" aria-label="Objectifs & stats" title="Objectifs & stats">
-                <span class="writing-nav-icon editor-sidebar__icon" aria-hidden="true">
-                  <svg viewBox="0 0 24 24">
-                    <path d="M5 19V9m7 10V5m7 14v-7" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
-                  </svg>
-                </span>
-                <span class="editor-sidebar__label">Objectifs &amp; stats</span>
-              </button>
             </nav>
           </section>
         </aside>
 
         ${writingNav === "chapter" ? chapterSidebar : ""}
 
-        <main class="writing-editor">
+        <main class="writing-editor${writingNav === "inspiration" ? " writing-editor--wide" : ""}${writingNav === "ideas" ? " writing-editor--ideas" : ""}${writingNav === "mindmap" ? " writing-editor--mindmap" : ""}">
         ${
           writingNav === "characters"
             ? characterPanel
             : writingNav === "inspiration"
             ? inspirationPanel
+            : writingNav === "ideas"
+            ? ideasPanel
+            : writingNav === "mindmap"
+            ? mindmapPanel
             : `
             <section class="panel card editor ${hasChapterSelected ? "" : "is-disabled"}">
               <div class="panel-header">

@@ -1,6 +1,6 @@
 import "../styles/app.css"
 import { route } from "./router.js"
-import { renderApp, renderHome, renderLogin } from "./ui.js"
+import { renderApp, renderHome, renderIdeas, renderLogin, renderProjects } from "./ui.js"
 import { signIn, signOut, signUp } from "./auth.js"
 import {
   listProjects,
@@ -31,6 +31,7 @@ import {
   setLastCloudSaveAt,
   upsertProjectsLocal,
   upsertChaptersLocal,
+  updateLocalProject,
   getLocalCharacters,
   createLocalCharacter,
   updateLocalCharacter,
@@ -38,7 +39,18 @@ import {
   listInspirationItems,
   createInspirationItem,
   updateInspirationItem,
-  deleteInspirationItem
+  deleteInspirationItem,
+  listIdeas,
+  createIdea,
+  updateIdea,
+  deleteIdea,
+  listMindmap,
+  createMindmapNode,
+  updateMindmapNode,
+  deleteMindmapNode,
+  createMindmapEdge,
+  deleteMindmapEdge,
+  deleteLocalProjectMindmap
 } from "./localStore.js"
 import { enqueueChapterUpsert, startSyncLoop, syncOnce } from "./sync.js"
 import { idbDel, idbGetAll, idbPut } from "./idb.js"
@@ -66,6 +78,8 @@ Object.entries({
 
 const state = {
   projects: [],
+  projectsStats: {},
+  projectsMenuOpenId: null,
   selectedProjectId: null,
   chapters: [],
   selectedChapterId: null,
@@ -81,6 +95,18 @@ const state = {
   backupStatus: "",
   homeStats: null,
   editorTab: "session",
+  ideas: [],
+  ideasQuery: "",
+  ideasTagFilter: "",
+  ideasStatusFilter: "all",
+  ideasSort: "desc",
+  draftIdeaText: "",
+  draftIdeaId: null,
+  ideasFiltersOpen: false,
+  ideasDraftStatus: "",
+  ideasProjectId: null,
+  ideasNoteExpanded: false,
+  selectedIdeaId: null,
   writingNav: "chapter",
   characters: [],
   selectedCharacterId: null,
@@ -95,11 +121,26 @@ const state = {
     draft: null
   },
   inspirationDetailId: null,
+  mindmapNodes: [],
+  mindmapEdges: [],
+  mindmapSelectedNodeId: null,
+  mindmapMode: "select",
+  mindmapLinkSourceId: null,
+  mindmapSearch: "",
+  mindmapCreateType: "note",
+  mindmapLinkTypeMenu: null,
+  mindmapFlashNodeId: null,
+  mindmapView: {
+    offsetX: 0,
+    offsetY: 0,
+    scale: 1
+  },
   characterSections: {
     civil: true,
     physique: false,
     caractere: false,
     profil: false,
+    storyRole: false,
     evolution: false,
     inventaire: false,
     possession: false,
@@ -114,16 +155,35 @@ const CLOUD_AUTOSAVE_INTERVAL_MS = 5 * 60 * 1000
 
 let autosaveTimer = null
 let cloudAutosaveTimer = null
+let ideasDraftTimer = null
+let draftIdeaSaving = false
+let draftIdeaNeedsRender = false
+let draftIdeaSequence = 0
+let ideasDraftStatusTimer = null
 let syncStarted = false
 let currentUserEmail = ""
 let dragChapterId = null
 let dragOverChapterId = null
 const characterSaveTimers = new Map()
+const ideaSaveTimers = new Map()
+const ideaPendingPatches = new Map()
+const MINDMAP_NODE_WIDTH = 180
+const MINDMAP_NODE_HEIGHT = 64
+let mindmapDrag = null
+let mindmapPan = null
+let mindmapFlashTimer = null
 
 function clearAutosaveTimer() {
   if (autosaveTimer) {
     clearTimeout(autosaveTimer)
     autosaveTimer = null
+  }
+}
+
+function clearIdeasDraftTimer() {
+  if (ideasDraftTimer) {
+    clearTimeout(ideasDraftTimer)
+    ideasDraftTimer = null
   }
 }
 
@@ -178,6 +238,25 @@ function setHomeMessage(text) {
 
 function renderAppUI() {
   unmountWritingView()
+  const allowedWritingNav = new Set(["chapter", "characters", "ideas", "inspiration", "mindmap"])
+  if (!allowedWritingNav.has(state.writingNav)) {
+    state.writingNav = "chapter"
+  }
+  if (state.writingNav !== "inspiration") {
+    state.inspirationDetailId = null
+    state.inspirationModal = {
+      open: false,
+      step: "type",
+      type: null,
+      mode: "create",
+      draft: null
+    }
+  }
+  if (state.writingNav !== "mindmap") {
+    state.mindmapMode = "select"
+    state.mindmapLinkSourceId = null
+    state.mindmapLinkTypeMenu = null
+  }
   if (
     state.writingNav === "characters" &&
     !state.selectedCharacterId &&
@@ -205,6 +284,26 @@ function renderAppUI() {
     inspirationTag: state.inspirationTag,
     inspirationModal: state.inspirationModal,
     inspirationDetailId: state.inspirationDetailId,
+    ideas: getFilteredIdeas(),
+    selectedIdeaId: state.selectedIdeaId,
+    ideasQuery: state.ideasQuery,
+    ideasTagFilter: state.ideasTagFilter,
+    ideasStatusFilter: state.ideasStatusFilter,
+    ideasSort: state.ideasSort,
+    draftIdeaText: state.draftIdeaText,
+    ideasFiltersOpen: state.ideasFiltersOpen,
+    ideasDraftStatus: state.ideasDraftStatus,
+    ideasNoteExpanded: state.ideasNoteExpanded,
+    mindmapNodes: state.mindmapNodes,
+    mindmapEdges: state.mindmapEdges,
+    mindmapSelectedNodeId: state.mindmapSelectedNodeId,
+    mindmapMode: state.mindmapMode,
+    mindmapLinkSourceId: state.mindmapLinkSourceId,
+    mindmapSearch: state.mindmapSearch,
+    mindmapCreateType: state.mindmapCreateType,
+    mindmapLinkTypeMenu: state.mindmapLinkTypeMenu,
+    mindmapFlashNodeId: state.mindmapFlashNodeId,
+    mindmapView: state.mindmapView,
     characterSections: state.characterSections,
     lastCloudSaveAt: state.lastCloudSaveAt,
     cloudBusy: state.cloudBusy,
@@ -241,14 +340,60 @@ function renderHomeUI() {
 
 }
 
+function renderProjectsUI() {
+  app.innerHTML = renderProjects({
+    userEmail: currentUserEmail,
+    projects: state.projects,
+    projectStats: state.projectsStats,
+    projectsMenuOpenId: state.projectsMenuOpenId,
+    lastProjectId: getLastOpenedProjectId(),
+    lastCloudSaveAt: state.lastCloudSaveAt,
+    cloudBusy: state.cloudBusy,
+    accountMenuOpen: state.accountMenuOpen,
+    backupStatus: state.backupStatus,
+    backupMenuOpen: state.backupMenuOpen
+  })
+}
+
+function renderIdeasUI() {
+  const ideas = getFilteredIdeas()
+  if (state.selectedIdeaId && !ideas.some((idea) => idea.id === state.selectedIdeaId)) {
+    state.selectedIdeaId = ideas[0]?.id ?? null
+  }
+  app.innerHTML = renderIdeas({
+    userEmail: currentUserEmail,
+    ideas,
+    selectedIdeaId: state.selectedIdeaId,
+    ideasQuery: state.ideasQuery,
+    ideasTagFilter: state.ideasTagFilter,
+    ideasStatusFilter: state.ideasStatusFilter,
+    ideasSort: state.ideasSort,
+    draftIdeaText: state.draftIdeaText,
+    ideasFiltersOpen: state.ideasFiltersOpen,
+    ideasDraftStatus: state.ideasDraftStatus,
+    ideasNoteExpanded: state.ideasNoteExpanded,
+    lastProjectId: getLastOpenedProjectId(),
+    lastCloudSaveAt: state.lastCloudSaveAt,
+    cloudBusy: state.cloudBusy,
+    accountMenuOpen: state.accountMenuOpen,
+    backupStatus: state.backupStatus,
+    backupMenuOpen: state.backupMenuOpen
+  })
+}
+
 
 function renderCurrentUI() {
-  if (window.location.hash.startsWith("#/editor")) {
+  if (window.location.hash.startsWith("#/project/") || window.location.hash.startsWith("#/editor")) {
     renderAppUI()
     return
   }
   if (window.location.hash.startsWith("#/home")) {
     renderHomeUI()
+    return
+  }
+  if (window.location.hash.startsWith("#/projects")) {
+    renderProjectsUI()
+    return
   }
 }
 
@@ -293,6 +438,37 @@ async function loadLocalProjects({ allowFallback = true } = {}) {
   if (!hasSelected && allowFallback) {
     state.selectedProjectId = state.projects[0].id
   }
+}
+
+async function loadProjectsStats() {
+  const stats = {}
+  for (const project of state.projects) {
+    const chapters = await getLocalChapters(project.id)
+    let wordCount = 0
+    const baseStamp = project.created_at ? new Date(project.created_at).getTime() : null
+    let updatedAt = Number.isNaN(baseStamp) ? null : baseStamp
+    for (const chapter of chapters) {
+      const plain = toPlainText(chapter.content_md ?? "")
+      wordCount += countWords(plain)
+      const candidate =
+        chapter.updated_local_at ??
+        chapter.updated_at ??
+        chapter.created_at ??
+        null
+      if (candidate) {
+        const candidateStamp = new Date(candidate).getTime()
+        if (!Number.isNaN(candidateStamp)) {
+          updatedAt = updatedAt ? Math.max(updatedAt, candidateStamp) : candidateStamp
+        }
+      }
+    }
+    stats[project.id] = {
+      chapterCount: chapters.length,
+      wordCount,
+      updatedAt
+    }
+  }
+  state.projectsStats = stats
 }
 
 async function loadLocalChapters() {
@@ -346,6 +522,24 @@ async function loadLocalInspiration() {
     return
   }
   state.inspirationItems = await listInspirationItems(state.selectedProjectId)
+}
+
+async function loadLocalMindmap() {
+  if (!state.selectedProjectId) {
+    state.mindmapNodes = []
+    state.mindmapEdges = []
+    state.mindmapSelectedNodeId = null
+    return
+  }
+  const result = await listMindmap(state.selectedProjectId)
+  state.mindmapNodes = result.nodes
+  state.mindmapEdges = result.edges
+  const hasSelected = state.mindmapNodes.some(
+    (node) => node.id === state.mindmapSelectedNodeId
+  )
+  if (!hasSelected) {
+    state.mindmapSelectedNodeId = null
+  }
 }
 
 async function loadLocalChapterDetail() {
@@ -412,6 +606,41 @@ async function loadHomeView() {
   await computeHomeStats()
   await updateLastChapterTitle()
   renderCurrentUI()
+}
+
+async function loadProjectsView() {
+  state.lastCloudSaveAt = getLastCloudSaveAt()
+  await loadLocalProjects({ allowFallback: false })
+  await loadProjectsStats()
+  renderCurrentUI()
+
+  await pullProjectsFromCloud()
+  await loadLocalProjects({ allowFallback: false })
+  await loadProjectsStats()
+  renderCurrentUI()
+}
+
+async function loadIdeasView({ projectId = null, render = true } = {}) {
+  state.lastCloudSaveAt = getLastCloudSaveAt()
+  state.ideasProjectId = projectId
+  state.ideas = await listIdeas({ projectId })
+  if (state.draftIdeaId) {
+    const draftExists = state.ideas.some((idea) => idea.id === state.draftIdeaId)
+    if (!draftExists) {
+      state.draftIdeaId = null
+      state.draftIdeaText = ""
+      state.ideasDraftStatus = ""
+    }
+  }
+  if (state.selectedIdeaId) {
+    const exists = state.ideas.some((idea) => idea.id === state.selectedIdeaId)
+    if (!exists) {
+      state.selectedIdeaId = null
+    }
+  }
+  if (render) {
+    renderCurrentUI()
+  }
 }
 
 function countWords(text) {
@@ -652,11 +881,219 @@ function handleCharacterWriteSideBySide() {
   setStatus("Bientot disponible.")
 }
 
+function normalizeText(value) {
+  return String(value || "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+}
+
 function parseTags(value) {
   return String(value || "")
     .split(",")
     .map((tag) => tag.trim())
     .filter(Boolean)
+}
+
+function getFilteredIdeas() {
+  let items = [...state.ideas]
+  const query = state.ideasQuery.trim()
+  if (query) {
+    const normalized = normalizeText(query)
+    items = items.filter((idea) => {
+      const haystack = [
+        idea.content,
+        idea.note,
+        ...(idea.tags ?? [])
+      ]
+        .filter(Boolean)
+        .join(" ")
+      return normalizeText(haystack).includes(normalized)
+    })
+  }
+
+  if (state.ideasTagFilter.trim()) {
+    const tagNeedle = normalizeText(state.ideasTagFilter.trim())
+    items = items.filter((idea) =>
+      (idea.tags ?? []).some((tag) => normalizeText(tag).includes(tagNeedle))
+    )
+  }
+
+  if (state.ideasStatusFilter !== "all") {
+    items = items.filter((idea) => idea.status === state.ideasStatusFilter)
+  }
+
+  const direction = state.ideasSort === "asc" ? 1 : -1
+  items.sort((a, b) => {
+    const aTime = a.created_at ?? 0
+    const bTime = b.created_at ?? 0
+    return direction * (aTime - bTime)
+  })
+
+  return items
+}
+
+function setIdeasDraftStatus(message) {
+  state.ideasDraftStatus = message
+  const statusEl = document.querySelector(".ideas-capture-status")
+  if (statusEl) {
+    statusEl.textContent = message
+  }
+  if (ideasDraftStatusTimer) {
+    clearTimeout(ideasDraftStatusTimer)
+    ideasDraftStatusTimer = null
+  }
+  if (message) {
+    ideasDraftStatusTimer = window.setTimeout(() => {
+      state.ideasDraftStatus = ""
+      const currentStatusEl = document.querySelector(".ideas-capture-status")
+      if (currentStatusEl) {
+        currentStatusEl.textContent = ""
+      }
+      ideasDraftStatusTimer = null
+    }, 900)
+  }
+}
+
+function queueIdeaPatch(id, patch, delay = 700) {
+  if (!id) {
+    return
+  }
+  const existing = ideaPendingPatches.get(id) ?? {}
+  ideaPendingPatches.set(id, { ...existing, ...patch })
+  if (ideaSaveTimers.has(id)) {
+    clearTimeout(ideaSaveTimers.get(id))
+  }
+  const timer = window.setTimeout(() => {
+    flushIdeaPatch(id)
+  }, delay)
+  ideaSaveTimers.set(id, timer)
+}
+
+async function applyIdeaPatch(id, patch, { render = false } = {}) {
+  if (!id) {
+    return
+  }
+  const updated = await updateIdea(id, patch)
+  if (updated) {
+    state.ideas = state.ideas.map((idea) => (idea.id === id ? updated : idea))
+    if (state.draftIdeaId === id && Object.prototype.hasOwnProperty.call(patch, "content")) {
+      state.draftIdeaText = updated.content ?? ""
+    }
+  } else {
+    state.ideas = await listIdeas({ projectId: state.ideasProjectId })
+  }
+  setIdeasDraftStatus("Enregistree")
+  if (render) {
+    renderCurrentUI()
+  }
+}
+
+async function flushIdeaPatch(id, { render = false } = {}) {
+  const patch = ideaPendingPatches.get(id)
+  if (!patch) {
+    return
+  }
+  ideaPendingPatches.delete(id)
+  if (ideaSaveTimers.has(id)) {
+    clearTimeout(ideaSaveTimers.get(id))
+    ideaSaveTimers.delete(id)
+  }
+  await applyIdeaPatch(id, patch, { render })
+}
+
+async function createIdeaFromDraft({ render = false } = {}) {
+  const content = state.draftIdeaText.trim()
+  if (!content || state.draftIdeaId) {
+    return
+  }
+  if (draftIdeaSaving) {
+    if (render) {
+      draftIdeaNeedsRender = true
+    }
+    return
+  }
+  draftIdeaSaving = true
+  const saveToken = ++draftIdeaSequence
+  try {
+    const created = await createIdea({
+      content,
+      status: "raw",
+      tags: [],
+      note: "",
+      project_id: state.ideasProjectId
+    })
+    if (saveToken !== draftIdeaSequence) {
+      return
+    }
+    state.ideas = await listIdeas({ projectId: state.ideasProjectId })
+    state.draftIdeaId = created?.id ?? null
+    state.selectedIdeaId = created?.id ?? null
+    setIdeasDraftStatus("Enregistree")
+    if (render || draftIdeaNeedsRender) {
+      renderCurrentUI()
+    }
+  } finally {
+    draftIdeaNeedsRender = false
+    draftIdeaSaving = false
+  }
+}
+
+async function handleIdeasCreate() {
+  clearIdeasDraftTimer()
+  if (state.draftIdeaId && ideaSaveTimers.has(state.draftIdeaId)) {
+    clearTimeout(ideaSaveTimers.get(state.draftIdeaId))
+    ideaSaveTimers.delete(state.draftIdeaId)
+    ideaPendingPatches.delete(state.draftIdeaId)
+  }
+  draftIdeaSequence += 1
+  draftIdeaNeedsRender = false
+  state.draftIdeaText = ""
+  state.draftIdeaId = null
+  state.selectedIdeaId = null
+  state.ideasNoteExpanded = false
+  setIdeasDraftStatus("")
+  renderCurrentUI()
+  window.requestAnimationFrame(() => {
+    const contentEl = document.querySelector("#ideas-new-content")
+    if (contentEl) {
+      contentEl.value = ""
+      contentEl.focus()
+    }
+  })
+}
+
+async function handleIdeasUpdate(id, patch) {
+  let nextPatch = patch
+  if (state.ideasProjectId && !Object.prototype.hasOwnProperty.call(patch, "project_id")) {
+    const idea = state.ideas.find((item) => item.id === id)
+    if (idea && !idea.project_id) {
+      nextPatch = { ...patch, project_id: state.ideasProjectId }
+    }
+  }
+  await applyIdeaPatch(id, nextPatch, { render: true })
+}
+
+async function handleIdeasDelete(id) {
+  if (!id) {
+    return
+  }
+  const confirmed = window.confirm("Supprimer cette idee ?")
+  if (!confirmed) {
+    return
+  }
+  await deleteIdea(id)
+  state.ideas = await listIdeas({ projectId: state.ideasProjectId })
+  if (state.selectedIdeaId === id) {
+    state.selectedIdeaId = state.ideas[0]?.id ?? null
+    state.ideasNoteExpanded = false
+  }
+  if (state.draftIdeaId === id) {
+    state.draftIdeaId = null
+    state.draftIdeaText = ""
+    setIdeasDraftStatus("")
+  }
+  renderCurrentUI()
 }
 
 function openInspirationModal(step = "type", type = null, draft = null, mode = "create") {
@@ -801,6 +1238,130 @@ function handleInspirationEdit(id) {
   openInspirationModal("form", item.type, draft, "edit")
 }
 
+function getMindmapNode(id) {
+  return state.mindmapNodes.find((node) => node.id === id)
+}
+
+async function handleMindmapCreateNode(position = null) {
+  if (!state.selectedProjectId) {
+    setStatus("Cree un projet avant d'ajouter une carte mentale.")
+    return
+  }
+  const canvas = document.querySelector(".mindmap-canvas")
+  const rect = canvas?.getBoundingClientRect()
+  const width = rect?.width ?? 800
+  const height = rect?.height ?? 500
+  const x =
+    position?.x ??
+    (width / 2 - state.mindmapView.offsetX) / state.mindmapView.scale -
+      MINDMAP_NODE_WIDTH / 2
+  const y =
+    position?.y ??
+    (height / 2 - state.mindmapView.offsetY) / state.mindmapView.scale -
+      MINDMAP_NODE_HEIGHT / 2
+  const node = await createMindmapNode(state.selectedProjectId, {
+    x,
+    y,
+    type: state.mindmapCreateType
+  })
+  state.mindmapNodes = [...state.mindmapNodes, node]
+  state.mindmapSelectedNodeId = node.id
+  renderAppUI()
+}
+
+async function handleMindmapDeleteNode(id) {
+  if (!id) {
+    return
+  }
+  await deleteMindmapNode(id)
+  state.mindmapNodes = state.mindmapNodes.filter((node) => node.id !== id)
+  state.mindmapEdges = state.mindmapEdges.filter(
+    (edge) => edge.fromNodeId !== id && edge.toNodeId !== id
+  )
+  if (state.mindmapSelectedNodeId === id) {
+    state.mindmapSelectedNodeId = null
+  }
+  renderAppUI()
+}
+
+async function handleMindmapUpdateNode(id, patch) {
+  const updated = await updateMindmapNode(id, patch)
+  if (!updated) {
+    return
+  }
+  state.mindmapNodes = state.mindmapNodes.map((node) =>
+    node.id === id ? updated : node
+  )
+  renderAppUI()
+}
+
+async function handleMindmapCreateEdge(fromId, toId, type = "linked") {
+  if (!fromId || !toId || fromId === toId) {
+    return
+  }
+  const edge = await createMindmapEdge(state.selectedProjectId, {
+    fromNodeId: fromId,
+    toNodeId: toId,
+    type
+  })
+  state.mindmapEdges = [...state.mindmapEdges, edge]
+}
+
+function handleMindmapSelectNode(id) {
+  state.mindmapSelectedNodeId = id
+  renderAppUI()
+}
+
+function handleMindmapResetView() {
+  state.mindmapView = { offsetX: 0, offsetY: 0, scale: 1 }
+  renderAppUI()
+}
+
+function panToMindmapNode(node) {
+  const canvas = document.querySelector(".mindmap-canvas")
+  if (!canvas) {
+    return
+  }
+  const rect = canvas.getBoundingClientRect()
+  const scale = state.mindmapView.scale
+  const targetX = rect.width / 2 - (node.x + MINDMAP_NODE_WIDTH / 2) * scale
+  const targetY = rect.height / 2 - (node.y + MINDMAP_NODE_HEIGHT / 2) * scale
+  state.mindmapView = {
+    ...state.mindmapView,
+    offsetX: targetX,
+    offsetY: targetY
+  }
+}
+
+function flashMindmapNode(id) {
+  if (mindmapFlashTimer) {
+    clearTimeout(mindmapFlashTimer)
+  }
+  state.mindmapFlashNodeId = id
+  renderAppUI()
+  mindmapFlashTimer = window.setTimeout(() => {
+    state.mindmapFlashNodeId = null
+    renderAppUI()
+  }, 600)
+}
+
+async function handleMindmapOpenSource(id) {
+  const node = getMindmapNode(id)
+  if (!node) {
+    return
+  }
+  if (node.linkedChapterId) {
+    state.writingNav = "chapter"
+    await handleChapterSelect(node.linkedChapterId)
+    return
+  }
+  if (node.linkedCharacterId) {
+    state.writingNav = "characters"
+    state.selectedCharacterId = node.linkedCharacterId
+    renderAppUI()
+  }
+}
+
 async function handleCloudSave() {
   if (state.cloudBusy) {
     return
@@ -851,6 +1412,9 @@ async function handleBackupExport() {
   const outbox = await idbGetAll("outbox")
   const characters = await idbGetAll("characters")
   const inspiration = await idbGetAll("inspiration")
+  const ideas = await idbGetAll("ideas")
+  const mindmapNodes = await idbGetAll("mindmap_nodes")
+  const mindmapEdges = await idbGetAll("mindmap_edges")
   const payload = {
     version: 1,
     exportedAt: new Date().toISOString(),
@@ -859,7 +1423,10 @@ async function handleBackupExport() {
       chapters,
       outbox,
       characters,
-      inspiration
+      inspiration,
+      ideas,
+      mindmapNodes,
+      mindmapEdges
     }
   }
 
@@ -916,6 +1483,9 @@ async function handleBackupImport(file) {
   const outbox = Array.isArray(data.outbox) ? data.outbox : []
   const characters = Array.isArray(data.characters) ? data.characters : []
   const inspiration = Array.isArray(data.inspiration) ? data.inspiration : []
+  const ideas = Array.isArray(data.ideas) ? data.ideas : []
+  const mindmapNodes = Array.isArray(data.mindmapNodes) ? data.mindmapNodes : []
+  const mindmapEdges = Array.isArray(data.mindmapEdges) ? data.mindmapEdges : []
 
   if (!projects || !chapters) {
     state.backupStatus = "Import refuse (donnees)."
@@ -938,12 +1508,24 @@ async function handleBackupImport(file) {
   await clearStore("projects", "id")
   await clearStore("chapters", "id")
   await clearStore("outbox", "opId")
+  await clearStore("ideas", "id")
   await clearStore("inspiration", "id")
+  await clearStore("mindmap_nodes", "id")
+  await clearStore("mindmap_edges", "id")
   for (const item of characters) {
     await idbPut("characters", item)
   }
   for (const item of inspiration) {
     await idbPut("inspiration", item)
+  }
+  for (const item of ideas) {
+    await idbPut("ideas", item)
+  }
+  for (const node of mindmapNodes) {
+    await idbPut("mindmap_nodes", node)
+  }
+  for (const edge of mindmapEdges) {
+    await idbPut("mindmap_edges", edge)
   }
 
   state.backupStatus = "Import termine."
@@ -992,7 +1574,7 @@ async function ensureProjectAvailable(projectId) {
 async function loadEditorView(projectId) {
   const hasProject = await ensureProjectAvailable(projectId)
   if (!hasProject) {
-    window.location.hash = "#/home"
+    window.location.hash = "#/projects"
     return
   }
 
@@ -1002,6 +1584,11 @@ async function loadEditorView(projectId) {
   await loadLocalChapters()
   await loadLocalCharacters()
   await loadLocalInspiration()
+  await loadLocalMindmap()
+  state.ideasProjectId = state.writingNav === "ideas" ? projectId : null
+  if (state.writingNav === "ideas") {
+    await loadIdeasView({ projectId, render: false })
+  }
   await loadLocalChapterDetail()
   if (state.selectedChapterId) {
     setLastOpenedChapterId(state.selectedChapterId)
@@ -1013,6 +1600,7 @@ async function loadEditorView(projectId) {
   await loadLocalChapterDetail()
   await loadLocalCharacters()
   await loadLocalInspiration()
+  await loadLocalMindmap()
   if (state.selectedChapterId) {
     setLastOpenedChapterId(state.selectedChapterId)
   }
@@ -1030,7 +1618,100 @@ async function handleProjectCreate() {
   await upsertProjectsLocal([result.data])
   setLastOpenedProjectId(result.data.id)
   state.editingProjectId = result.data.id
-  window.location.hash = `#/editor/${result.data.id}`
+  window.location.hash = `#/project/${result.data.id}/write`
+}
+
+async function handleProjectsCreate() {
+  const result = await createProject("Sans titre")
+  if (!result.ok) {
+    setStatus(`Erreur: ${result.errorMessage}`)
+    return
+  }
+
+  await upsertProjectsLocal([result.data])
+  setLastOpenedProjectId(result.data.id)
+  state.editingProjectId = result.data.id
+  window.location.hash = `#/project/${result.data.id}/write`
+}
+
+async function handleProjectsRename(id) {
+  if (!id) {
+    return
+  }
+  const project = state.projects.find((item) => item.id === id)
+  const currentTitle = project?.title ?? "Sans titre"
+  const nextTitle = window.prompt("Renommer le projet :", currentTitle)
+  if (nextTitle === null) {
+    return
+  }
+  const title = nextTitle.trim() || "Sans titre"
+  const result = await renameProject(id, title)
+  if (!result.ok) {
+    setStatus(`Erreur: ${result.errorMessage}`)
+    return
+  }
+  await upsertProjectsLocal([result.data])
+  await loadLocalProjects({ allowFallback: false })
+  await loadProjectsStats()
+  state.projectsMenuOpenId = null
+  renderCurrentUI()
+}
+
+async function handleProjectsStatus(id, status) {
+  if (!id || !status) {
+    return
+  }
+  await updateLocalProject(id, { status })
+  await loadLocalProjects({ allowFallback: false })
+  await loadProjectsStats()
+  if (status === "archived" && getLastOpenedProjectId() === id) {
+    setLastOpenedProjectId(null)
+  }
+  state.projectsMenuOpenId = null
+  renderCurrentUI()
+}
+
+async function handleProjectsDelete(id) {
+  if (!id) {
+    return
+  }
+  const project = state.projects.find((item) => item.id === id)
+  const title = project?.title ? `"${project.title}"` : "ce projet"
+  const confirmed = window.confirm(`Supprimer ${title} ? Cette action est definitive.`)
+  if (!confirmed) {
+    return
+  }
+  const result = await deleteProject(id)
+  if (!result.ok) {
+    setStatus(`Erreur: ${result.errorMessage}`)
+    return
+  }
+
+  await deleteLocalProject(id)
+  await deleteLocalProjectChapters(id)
+  await deleteLocalProjectInspiration(id)
+  await deleteLocalProjectMindmap(id)
+  await loadLocalProjects({ allowFallback: false })
+  await loadProjectsStats()
+
+  if (state.selectedProjectId === id) {
+    state.selectedProjectId = null
+    state.selectedChapterId = null
+    state.chapterDetail = null
+    state.chapters = []
+    state.versions = []
+  }
+
+  if (state.editingProjectId === id) {
+    state.editingProjectId = null
+  }
+
+  if (getLastOpenedProjectId() === id) {
+    setLastOpenedProjectId(null)
+  }
+
+  state.projectsMenuOpenId = null
+  renderCurrentUI()
 }
 
 async function handleProjectSelect(id) {
@@ -1040,7 +1721,7 @@ async function handleProjectSelect(id) {
 
   setLastOpenedProjectId(id)
   state.editingProjectId = null
-  window.location.hash = `#/editor/${id}`
+  window.location.hash = `#/project/${id}/write`
 }
 
 async function handleHomeProjectOpen(id) {
@@ -1049,7 +1730,7 @@ async function handleHomeProjectOpen(id) {
   }
 
   setLastOpenedProjectId(id)
-  window.location.hash = `#/editor/${id}`
+  window.location.hash = `#/project/${id}/write`
 }
 
 async function handleHomeProjectContinue() {
@@ -1058,7 +1739,7 @@ async function handleHomeProjectContinue() {
     return
   }
 
-  window.location.hash = `#/editor/${lastProjectId}`
+  window.location.hash = `#/project/${lastProjectId}/write`
 }
 
 async function handleHomeProjectCreate() {
@@ -1072,7 +1753,7 @@ async function handleHomeProjectCreate() {
   await upsertProjectsLocal([result.data])
   setLastOpenedProjectId(result.data.id)
   state.editingProjectId = result.data.id
-  window.location.hash = `#/editor/${result.data.id}`
+  window.location.hash = `#/project/${result.data.id}/write`
 }
 
 async function handleHomeProjectDelete(id) {
@@ -1096,6 +1777,7 @@ async function handleHomeProjectDelete(id) {
   await deleteLocalProject(id)
   await deleteLocalProjectChapters(id)
   await deleteLocalProjectInspiration(id)
+  await deleteLocalProjectMindmap(id)
   await loadLocalProjects({ allowFallback: false })
 
   if (state.selectedProjectId === id) {
@@ -1513,14 +2195,101 @@ app.addEventListener("click", async (event) => {
     return
   }
 
-  if (action === "nav-editor") {
+  if (action === "nav-ideas") {
     state.accountMenuOpen = false
     state.backupMenuOpen = false
-    const targetId = actionTarget.dataset.id || getLastOpenedProjectId()
-    if (!targetId) {
+    const lastProjectId = getLastOpenedProjectId()
+    window.location.hash = lastProjectId
+      ? `#/project/${lastProjectId}/ideas`
+      : "#/projects"
+    return
+  }
+
+  if (action === "nav-projects") {
+    state.accountMenuOpen = false
+    state.backupMenuOpen = false
+    window.location.hash = "#/projects"
+    return
+  }
+
+  if (action === "projects-open") {
+    const id = actionTarget.dataset.id
+    if (!id) {
       return
     }
-    window.location.hash = `#/editor/${targetId}`
+    setLastOpenedProjectId(id)
+    state.projectsMenuOpenId = null
+    window.location.hash = `#/project/${id}/write`
+    return
+  }
+
+  if (action === "projects-create") {
+    await handleProjectsCreate()
+    return
+  }
+
+  if (action === "projects-menu-toggle") {
+    const id = actionTarget.dataset.id
+    state.projectsMenuOpenId = state.projectsMenuOpenId === id ? null : id
+    renderCurrentUI()
+    return
+  }
+
+  if (action === "projects-rename") {
+    await handleProjectsRename(actionTarget.dataset.id)
+    return
+  }
+
+  if (action === "projects-status") {
+    await handleProjectsStatus(actionTarget.dataset.id, actionTarget.dataset.status)
+    return
+  }
+
+  if (action === "projects-delete") {
+    await handleProjectsDelete(actionTarget.dataset.id)
+    return
+  }
+
+  if (action === "ideas-create") {
+    await handleIdeasCreate()
+    return
+  }
+
+  if (action === "ideas-select") {
+    const id = actionTarget.dataset.id
+    if (id) {
+      if (id === state.selectedIdeaId) {
+        state.selectedIdeaId = null
+        state.ideasNoteExpanded = false
+        renderCurrentUI()
+        return
+      }
+      state.selectedIdeaId = id
+      state.ideasNoteExpanded = false
+      const selected = state.ideas.find((idea) => idea.id === id)
+      if (selected) {
+        state.draftIdeaId = id
+        state.draftIdeaText = selected.content ?? ""
+      }
+      renderCurrentUI()
+    }
+    return
+  }
+
+  if (action === "ideas-delete") {
+    await handleIdeasDelete(actionTarget.dataset.id)
+    return
+  }
+
+  if (action === "ideas-note-toggle") {
+    state.ideasNoteExpanded = !state.ideasNoteExpanded
+    renderCurrentUI()
+    return
+  }
+
+  if (action === "ideas-filters-toggle") {
+    state.ideasFiltersOpen = !state.ideasFiltersOpen
+    renderCurrentUI()
     return
   }
 
@@ -1659,18 +2428,18 @@ app.addEventListener("click", async (event) => {
   if (action === "writing-nav") {
     const nextNav = actionTarget.dataset.nav
     if (nextNav && nextNav !== state.writingNav) {
-      state.writingNav = nextNav
-      if (nextNav !== "inspiration") {
-        state.inspirationDetailId = null
-        state.inspirationModal = {
-          open: false,
-          step: "type",
-          type: null,
-          mode: "create",
-          draft: null
-        }
+      const projectId = state.selectedProjectId
+      if (!projectId) {
+        return
       }
-      renderAppUI()
+      const routeMap = {
+        chapter: "write",
+        characters: "characters",
+        inspiration: "inspiration",
+        ideas: "ideas",
+        mindmap: "mindmap"
+      }
+      window.location.hash = `#/project/${projectId}/${routeMap[nextNav] ?? "write"}`
     }
     return
   }
@@ -1712,6 +2481,113 @@ app.addEventListener("click", async (event) => {
 
   if (action === "inspiration-delete") {
     await handleInspirationDelete(actionTarget.dataset.id)
+    return
+  }
+
+  if (action === "mindmap-add-node") {
+    await handleMindmapCreateNode()
+    return
+  }
+
+  if (action === "mindmap-link-mode") {
+    state.mindmapMode = state.mindmapMode === "link" ? "select" : "link"
+    state.mindmapLinkSourceId = null
+    renderAppUI()
+    return
+  }
+
+  if (action === "mindmap-reset") {
+    handleMindmapResetView()
+    return
+  }
+
+  if (action === "mindmap-node") {
+    const nodeId = actionTarget.dataset.id
+    if (!nodeId) {
+      return
+    }
+    if (state.mindmapMode === "link") {
+      if (!state.mindmapLinkSourceId) {
+        state.mindmapLinkSourceId = nodeId
+        renderAppUI()
+        return
+      }
+      const fromNode = getMindmapNode(state.mindmapLinkSourceId)
+      const toNode = getMindmapNode(nodeId)
+      if (!fromNode || !toNode) {
+        state.mindmapMode = "select"
+        state.mindmapLinkSourceId = null
+        renderAppUI()
+        return
+      }
+      const menuX = (fromNode.x + toNode.x) / 2 + MINDMAP_NODE_WIDTH / 2 - 80
+      const menuY = (fromNode.y + toNode.y) / 2 + MINDMAP_NODE_HEIGHT / 2 - 20
+      state.mindmapLinkTypeMenu = {
+        open: true,
+        fromId: fromNode.id,
+        toId: toNode.id,
+        x: menuX,
+        y: menuY
+      }
+      renderAppUI()
+      return
+    }
+    handleMindmapSelectNode(nodeId)
+    return
+  }
+
+  if (action === "mindmap-canvas") {
+    if (state.mindmapLinkTypeMenu?.open) {
+      const menu = state.mindmapLinkTypeMenu
+      if (menu?.fromId && menu?.toId) {
+        await handleMindmapCreateEdge(menu.fromId, menu.toId, "linked")
+      }
+      state.mindmapLinkTypeMenu = null
+      state.mindmapMode = "select"
+      state.mindmapLinkSourceId = null
+      renderAppUI()
+      return
+    }
+    state.mindmapSelectedNodeId = null
+    if (state.mindmapMode === "link") {
+      state.mindmapLinkSourceId = null
+    }
+    renderAppUI()
+    return
+  }
+
+  if (action === "mindmap-delete-node") {
+    await handleMindmapDeleteNode(actionTarget.dataset.id)
+    return
+  }
+
+  if (action === "mindmap-open-source") {
+    await handleMindmapOpenSource(actionTarget.dataset.id)
+    return
+  }
+
+  if (action === "mindmap-link-type") {
+    const type = actionTarget.dataset.type || "linked"
+    const menu = state.mindmapLinkTypeMenu
+    if (menu?.fromId && menu?.toId) {
+      await handleMindmapCreateEdge(menu.fromId, menu.toId, type)
+    }
+    state.mindmapLinkTypeMenu = null
+    state.mindmapMode = "select"
+    state.mindmapLinkSourceId = null
+    renderAppUI()
+    return
+  }
+
+  if (action === "mindmap-link-cancel") {
+    const menu = state.mindmapLinkTypeMenu
+    if (menu?.fromId && menu?.toId) {
+      await handleMindmapCreateEdge(menu.fromId, menu.toId, "linked")
+    }
+    state.mindmapLinkTypeMenu = null
+    state.mindmapMode = "select"
+    state.mindmapLinkSourceId = null
+    renderAppUI()
     return
   }
 
@@ -1843,6 +2719,142 @@ app.addEventListener("dragend", () => {
   dragOverChapterId = null
 })
 
+app.addEventListener("mousedown", (event) => {
+  if (state.writingNav !== "mindmap") {
+    return
+  }
+  const target = event.target
+  if (!(target instanceof Element)) {
+    return
+  }
+  const nodeEl = target.closest(".mindmap-node")
+  const canvasEl = target.closest(".mindmap-canvas")
+  if (!canvasEl) {
+    return
+  }
+
+  if (nodeEl) {
+    const nodeId = nodeEl.dataset.id
+    const node = getMindmapNode(nodeId)
+    if (!node) {
+      return
+    }
+    mindmapDrag = {
+      id: node.id,
+      startX: event.clientX,
+      startY: event.clientY,
+      originX: node.x,
+      originY: node.y
+    }
+    event.preventDefault()
+    return
+  }
+
+  mindmapPan = {
+    startX: event.clientX,
+    startY: event.clientY,
+    originX: state.mindmapView.offsetX,
+    originY: state.mindmapView.offsetY
+  }
+  event.preventDefault()
+})
+
+app.addEventListener("dblclick", async (event) => {
+  if (state.writingNav !== "mindmap") {
+    return
+  }
+  const target = event.target
+  if (!(target instanceof Element)) {
+    return
+  }
+  const canvasEl = target.closest(".mindmap-canvas")
+  if (!canvasEl) {
+    return
+  }
+  const rect = canvasEl.getBoundingClientRect()
+  const x = (event.clientX - rect.left - state.mindmapView.offsetX) / state.mindmapView.scale - MINDMAP_NODE_WIDTH / 2
+  const y = (event.clientY - rect.top - state.mindmapView.offsetY) / state.mindmapView.scale - MINDMAP_NODE_HEIGHT / 2
+  await handleMindmapCreateNode({ x, y })
+})
+
+app.addEventListener("mousemove", (event) => {
+  if (state.writingNav !== "mindmap") {
+    return
+  }
+
+  if (mindmapDrag) {
+    const dx = (event.clientX - mindmapDrag.startX) / state.mindmapView.scale
+    const dy = (event.clientY - mindmapDrag.startY) / state.mindmapView.scale
+    const nextX = mindmapDrag.originX + dx
+    const nextY = mindmapDrag.originY + dy
+    state.mindmapNodes = state.mindmapNodes.map((node) =>
+      node.id === mindmapDrag.id ? { ...node, x: nextX, y: nextY } : node
+    )
+    renderAppUI()
+    return
+  }
+
+  if (mindmapPan) {
+    const dx = event.clientX - mindmapPan.startX
+    const dy = event.clientY - mindmapPan.startY
+    state.mindmapView = {
+      ...state.mindmapView,
+      offsetX: mindmapPan.originX + dx,
+      offsetY: mindmapPan.originY + dy
+    }
+    renderAppUI()
+  }
+})
+
+app.addEventListener("mouseup", async () => {
+  if (state.writingNav !== "mindmap") {
+    mindmapDrag = null
+    mindmapPan = null
+    return
+  }
+  if (mindmapDrag) {
+    const node = getMindmapNode(mindmapDrag.id)
+    if (node) {
+      await updateMindmapNode(node.id, { x: node.x, y: node.y })
+    }
+  }
+  mindmapDrag = null
+  mindmapPan = null
+})
+
+app.addEventListener(
+  "wheel",
+  (event) => {
+    if (state.writingNav !== "mindmap") {
+      return
+    }
+    const target = event.target
+    if (!(target instanceof Element)) {
+      return
+    }
+    const canvasEl = target.closest(".mindmap-canvas")
+    if (!canvasEl) {
+      return
+    }
+    event.preventDefault()
+    const rect = canvasEl.getBoundingClientRect()
+    const mouseX = event.clientX - rect.left
+    const mouseY = event.clientY - rect.top
+    const prevScale = state.mindmapView.scale
+    const nextScale = Math.min(2, Math.max(0.4, prevScale + (event.deltaY > 0 ? -0.08 : 0.08)))
+    const scaleRatio = nextScale / prevScale
+    const nextOffsetX = mouseX - (mouseX - state.mindmapView.offsetX) * scaleRatio
+    const nextOffsetY = mouseY - (mouseY - state.mindmapView.offsetY) * scaleRatio
+    state.mindmapView = {
+      offsetX: nextOffsetX,
+      offsetY: nextOffsetY,
+      scale: nextScale
+    }
+    renderAppUI()
+  },
+  { passive: false }
+)
+
 app.addEventListener("input", async (event) => {
   const target = event.target
   if (!target) {
@@ -1854,9 +2866,100 @@ app.addEventListener("input", async (event) => {
     return
   }
 
+  if (target.id === "ideas-new-content") {
+    state.draftIdeaText = target.value
+    setIdeasDraftStatus("")
+    clearIdeasDraftTimer()
+    if (state.draftIdeaId && state.selectedIdeaId !== state.draftIdeaId) {
+      state.selectedIdeaId = state.draftIdeaId
+    }
+    if (state.draftIdeaId) {
+      queueIdeaPatch(state.draftIdeaId, { content: target.value })
+    } else if (target.value.trim()) {
+      ideasDraftTimer = window.setTimeout(() => {
+        createIdeaFromDraft({ render: false })
+        ideasDraftTimer = null
+      }, 900)
+    }
+    return
+  }
+
+  if (target.id === "ideas-search") {
+    state.ideasQuery = target.value
+    renderCurrentUI()
+    return
+  }
+
+  if (target.id === "ideas-tag-filter") {
+    state.ideasTagFilter = target.value
+    renderCurrentUI()
+    return
+  }
+
   if (target.id === "inspiration-search") {
     handleInspirationSearch(target.value)
     return
+  }
+
+  if (target.id === "mindmap-search") {
+    state.mindmapSearch = target.value
+    const query = target.value.trim()
+    if (query) {
+      const normalized = normalizeText(query)
+      const match = state.mindmapNodes.find((node) => {
+        const haystack = [
+          node.title,
+          node.summary,
+          ...(node.tags ?? [])
+        ]
+          .filter(Boolean)
+          .join(" ")
+        return normalizeText(haystack).includes(normalized)
+      })
+      if (match) {
+        state.mindmapSelectedNodeId = match.id
+        panToMindmapNode(match)
+        flashMindmapNode(match.id)
+      }
+    }
+    renderAppUI()
+    return
+  }
+
+  if (target.dataset.mindmapField) {
+    const field = target.dataset.mindmapField
+    const id = target.dataset.id
+    if (id) {
+      const value = target.value
+      if (field === "tags") {
+        const tags = parseTags(value)
+        handleMindmapUpdateNode(id, { tags })
+        return
+      }
+      handleMindmapUpdateNode(id, { [field]: value })
+      return
+    }
+  }
+
+  if (target.dataset.ideaField) {
+    const field = target.dataset.ideaField
+    const id = target.dataset.id
+    if (id) {
+      if (field === "tags") {
+        const tags = parseTags(target.value)
+        queueIdeaPatch(id, { tags })
+        return
+      }
+      if (field === "content" && id === state.draftIdeaId) {
+        state.draftIdeaText = target.value
+        const captureEl = document.querySelector("#ideas-new-content")
+        if (captureEl && captureEl !== target) {
+          captureEl.value = target.value
+        }
+      }
+      queueIdeaPatch(id, { [field]: target.value })
+      return
+    }
   }
 
   if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) {
@@ -1873,9 +2976,33 @@ app.addEventListener("input", async (event) => {
   }
 })
 
+app.addEventListener("focusout", async (event) => {
+  const target = event.target
+  if (!(target instanceof Element)) {
+    return
+  }
+
+  if (target.id === "ideas-new-content") {
+    clearIdeasDraftTimer()
+    if (!state.draftIdeaId) {
+      await createIdeaFromDraft({ render: true })
+      return
+    }
+    await flushIdeaPatch(state.draftIdeaId, { render: true })
+    return
+  }
+
+  if (target.dataset.ideaField) {
+    const id = target.dataset.id
+    if (id) {
+      await flushIdeaPatch(id, { render: false })
+    }
+  }
+})
+
 app.addEventListener("change", async (event) => {
   const target = event.target
-  if (!(target instanceof HTMLInputElement)) {
+  if (!(target instanceof HTMLInputElement || target instanceof HTMLSelectElement)) {
     return
   }
 
@@ -1886,8 +3013,48 @@ app.addEventListener("change", async (event) => {
     return
   }
 
+  if (target.dataset.mindmapField) {
+    const field = target.dataset.mindmapField
+    const id = target.dataset.id
+    if (id) {
+      handleMindmapUpdateNode(id, { [field]: target.value })
+    }
+    return
+  }
+
+  if (target.dataset.ideaField) {
+    const field = target.dataset.ideaField
+    const id = target.dataset.id
+    if (id) {
+      if (field === "tags") {
+        const tags = parseTags(target.value)
+        await applyIdeaPatch(id, { tags }, { render: true })
+        return
+      }
+      await applyIdeaPatch(id, { [field]: target.value }, { render: true })
+    }
+    return
+  }
+
   if (target.id === "inspiration-tag-filter") {
     handleInspirationTagFilter(target.value)
+    return
+  }
+
+  if (target.id === "ideas-status-filter") {
+    state.ideasStatusFilter = target.value
+    renderCurrentUI()
+    return
+  }
+
+  if (target.id === "ideas-sort") {
+    state.ideasSort = target.value
+    renderCurrentUI()
+    return
+  }
+
+  if (target.id === "mindmap-create-type") {
+    state.mindmapCreateType = target.value
     return
   }
 
@@ -1988,16 +3155,54 @@ document.addEventListener("click", (event) => {
   renderCurrentUI()
 })
 
-document.addEventListener("keydown", (event) => {
-  if (event.key !== "Escape") {
+document.addEventListener("click", (event) => {
+  if (!state.projectsMenuOpenId) {
     return
   }
-  if (!state.accountMenuOpen && !state.backupMenuOpen) {
+  const target = event.target
+  if (!(target instanceof Element)) {
     return
   }
-  state.accountMenuOpen = false
-  state.backupMenuOpen = false
+  if (target.closest(".project-menu") || target.closest(".project-menu-toggle")) {
+    return
+  }
+  state.projectsMenuOpenId = null
   renderCurrentUI()
+})
+
+document.addEventListener("keydown", (event) => {
+  const target = event.target
+  const isEditable =
+    target instanceof HTMLInputElement ||
+    target instanceof HTMLTextAreaElement ||
+    (target instanceof HTMLElement && target.isContentEditable)
+
+  if (event.key === "Escape") {
+    if (!state.accountMenuOpen && !state.backupMenuOpen) {
+      return
+    }
+    state.accountMenuOpen = false
+    state.backupMenuOpen = false
+    renderCurrentUI()
+    return
+  }
+
+  if (isEditable) {
+    return
+  }
+
+  const key = event.key.toLowerCase()
+  const primary = (event.ctrlKey || event.metaKey) && event.shiftKey && key === "i"
+  const fallback = event.ctrlKey && event.altKey && key === "i"
+  if (primary || fallback) {
+    event.preventDefault()
+    state.accountMenuOpen = false
+    state.backupMenuOpen = false
+    const lastProjectId = getLastOpenedProjectId()
+    window.location.hash = lastProjectId
+      ? `#/project/${lastProjectId}/ideas`
+      : "#/projects"
+  }
 })
 
 app.addEventListener("keydown", async (event) => {
@@ -2027,6 +3232,26 @@ app.addEventListener("keydown", async (event) => {
   }
 })
 
+app.addEventListener("keydown", (event) => {
+  const target = event.target
+  if (!(target instanceof HTMLElement)) {
+    return
+  }
+  if (target.dataset.action !== "projects-open" || target.tagName === "BUTTON") {
+    return
+  }
+  if (event.key === "Enter" || event.key === " ") {
+    event.preventDefault()
+    const id = target.dataset.id
+    if (!id) {
+      return
+    }
+    setLastOpenedProjectId(id)
+    state.projectsMenuOpenId = null
+    window.location.hash = `#/project/${id}/write`
+  }
+})
+
 async function render() {
   const { page, props } = await route()
   clearAutosaveTimer()
@@ -2041,6 +3266,9 @@ async function render() {
       syncStarted = true
     }
 
+    if (props.writingNav) {
+      state.writingNav = props.writingNav
+    }
     await loadEditorView(props.projectId)
     return
   }
@@ -2053,6 +3281,15 @@ async function render() {
     currentUserEmail = props.userEmail
     setCloudAutosaveActive(Boolean(currentUserEmail))
     await loadHomeView()
+    return
+  }
+
+  if (page === "projects") {
+    state.accountMenuOpen = false
+    state.backupMenuOpen = false
+    currentUserEmail = props.userEmail
+    setCloudAutosaveActive(Boolean(currentUserEmail))
+    await loadProjectsView()
     return
   }
 
