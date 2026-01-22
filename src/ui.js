@@ -1873,6 +1873,7 @@ export function renderApp({
             <section class="panel card editor ${hasChapterSelected ? "" : "is-disabled"}">
               <div class="panel-header">
                 <span id="status-text" class="status">${statusText}</span>
+                <span id="editor-word-count" class="status"></span>
               </div>
               <div class="editor-body">
                 ${editorContent}

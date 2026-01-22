@@ -78,6 +78,27 @@ const TabIndent = Extension.create({
   }
 })
 
+function countWords(text) {
+  const trimmed = text.trim()
+  if (!trimmed) {
+    return 0
+  }
+  const matches = trimmed.match(/\S+/g)
+  return matches ? matches.length : 0
+}
+
+function updateWordCount() {
+  if (!editorInstance) {
+    return
+  }
+  const label = document.querySelector("#editor-word-count")
+  if (!label) {
+    return
+  }
+  const words = countWords(editorInstance.state.doc.textContent ?? "")
+  label.textContent = `${words} mot${words === 1 ? "" : "s"}`
+}
+
 function escapeHtml(value) {
   return value
     .replace(/&/g, "&amp;")
@@ -345,12 +366,14 @@ export function mountWritingView({ content = "", onUpdate } = {}) {
         onUpdate(editor.getHTML())
       }
       updateToolbarState()
+      updateWordCount()
     },
     onSelectionUpdate: updateToolbarState,
     onTransaction: updateToolbarState
   })
 
   updateToolbarState()
+  updateWordCount()
 }
 
 export function unmountWritingView() {

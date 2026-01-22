@@ -2232,12 +2232,11 @@ body {
   position: absolute;
   left: var(--character-detail-x);
   top: var(--character-detail-y);
-  width: min(100%, var(--character-detail-width));
-  max-width: var(--character-detail-width);
+  width: var(--character-detail-width);
   box-sizing: border-box;
-  max-height: calc(100vh - 220px);
-  overflow: auto;
-  overscroll-behavior: contain;
+  max-height: none;
+  overflow: visible;
+  overscroll-behavior: auto;
   border: 1px solid #003049;
   border-radius: var(--radius-card);
   background: var(--bg);
@@ -3782,10 +3781,13 @@ body {
 
 .status {
   font-size: 12px;
-  color: var(--text-muted);
-  padding: 4px 10px;
+  font-weight: 500;
+  color: var(--muted-modern);
+  padding: 6px 12px;
   border-radius: 999px;
-  background: var(--surface-modern);
+  background: transparent;
+  border: 1px solid rgba(0, 48, 73, 0.18);
+  letter-spacing: 0.02em;
 }
 
 .status:empty {
