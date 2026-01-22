@@ -7,6 +7,7 @@ import {
   createProject,
   renameProject,
   deleteProject,
+  ensureProjectExists,
   listChapters,
   createChapter,
   updateChapter,
@@ -32,6 +33,7 @@ import {
   upsertProjectsLocal,
   upsertChaptersLocal,
   updateLocalProject,
+  createLocalChapter,
   getLocalCharacters,
   createLocalCharacter,
   updateLocalCharacter,
@@ -58,23 +60,9 @@ import { mountWritingView, unmountWritingView } from "./writingView.js"
 import { loadFromCloud, saveToCloud } from "./cloud.js"
 
 const app = document.querySelector("#app")
+const DEBUG_RENAME = import.meta.env.DEV
+const DEBUG_CHAPTER = import.meta.env.DEV
 
-Object.entries({
-  "--layout-story-offset-x": "310px",
-  "--layout-story-offset-y": "0px",
-  "--layout-editor-width": "850px",
-  "--layout-editor-offset-x": "-9px",
-  "--layout-nav-offset-x": "322px",
-  "--layout-nav-offset-y": "0px",
-  "--layout-characters-list-x": "-124px",
-  "--layout-characters-list-y": "0px",
-  "--layout-characters-list-width": "220px",
-  "--layout-characters-detail-x": "107px",
-  "--layout-characters-detail-y": "0px",
-  "--layout-characters-detail-width": "880px"
-}).forEach(([key, value]) => {
-  document.documentElement.style.setProperty(key, value)
-})
 
 const state = {
   projects: [],
@@ -100,10 +88,7 @@ const state = {
   ideasTagFilter: "",
   ideasStatusFilter: "all",
   ideasSort: "desc",
-  draftIdeaText: "",
-  draftIdeaId: null,
   ideasFiltersOpen: false,
-  ideasDraftStatus: "",
   ideasProjectId: null,
   ideasNoteExpanded: false,
   selectedIdeaId: null,
@@ -155,11 +140,6 @@ const CLOUD_AUTOSAVE_INTERVAL_MS = 5 * 60 * 1000
 
 let autosaveTimer = null
 let cloudAutosaveTimer = null
-let ideasDraftTimer = null
-let draftIdeaSaving = false
-let draftIdeaNeedsRender = false
-let draftIdeaSequence = 0
-let ideasDraftStatusTimer = null
 let syncStarted = false
 let currentUserEmail = ""
 let dragChapterId = null
@@ -167,6 +147,7 @@ let dragOverChapterId = null
 const characterSaveTimers = new Map()
 const ideaSaveTimers = new Map()
 const ideaPendingPatches = new Map()
+const projectRenamePending = new Set()
 const MINDMAP_NODE_WIDTH = 180
 const MINDMAP_NODE_HEIGHT = 64
 let mindmapDrag = null
@@ -177,13 +158,6 @@ function clearAutosaveTimer() {
   if (autosaveTimer) {
     clearTimeout(autosaveTimer)
     autosaveTimer = null
-  }
-}
-
-function clearIdeasDraftTimer() {
-  if (ideasDraftTimer) {
-    clearTimeout(ideasDraftTimer)
-    ideasDraftTimer = null
   }
 }
 
@@ -290,9 +264,7 @@ function renderAppUI() {
     ideasTagFilter: state.ideasTagFilter,
     ideasStatusFilter: state.ideasStatusFilter,
     ideasSort: state.ideasSort,
-    draftIdeaText: state.draftIdeaText,
     ideasFiltersOpen: state.ideasFiltersOpen,
-    ideasDraftStatus: state.ideasDraftStatus,
     ideasNoteExpanded: state.ideasNoteExpanded,
     mindmapNodes: state.mindmapNodes,
     mindmapEdges: state.mindmapEdges,
@@ -340,12 +312,14 @@ function renderHomeUI() {
 
 }
 
+
 function renderProjectsUI() {
   app.innerHTML = renderProjects({
     userEmail: currentUserEmail,
     projects: state.projects,
     projectStats: state.projectsStats,
     projectsMenuOpenId: state.projectsMenuOpenId,
+    editingProjectId: state.editingProjectId,
     lastProjectId: getLastOpenedProjectId(),
     lastCloudSaveAt: state.lastCloudSaveAt,
     cloudBusy: state.cloudBusy,
@@ -368,9 +342,7 @@ function renderIdeasUI() {
     ideasTagFilter: state.ideasTagFilter,
     ideasStatusFilter: state.ideasStatusFilter,
     ideasSort: state.ideasSort,
-    draftIdeaText: state.draftIdeaText,
     ideasFiltersOpen: state.ideasFiltersOpen,
-    ideasDraftStatus: state.ideasDraftStatus,
     ideasNoteExpanded: state.ideasNoteExpanded,
     lastProjectId: getLastOpenedProjectId(),
     lastCloudSaveAt: state.lastCloudSaveAt,
@@ -624,14 +596,6 @@ async function loadIdeasView({ projectId = null, render = true } = {}) {
   state.lastCloudSaveAt = getLastCloudSaveAt()
   state.ideasProjectId = projectId
   state.ideas = await listIdeas({ projectId })
-  if (state.draftIdeaId) {
-    const draftExists = state.ideas.some((idea) => idea.id === state.draftIdeaId)
-    if (!draftExists) {
-      state.draftIdeaId = null
-      state.draftIdeaText = ""
-      state.ideasDraftStatus = ""
-    }
-  }
   if (state.selectedIdeaId) {
     const exists = state.ideas.some((idea) => idea.id === state.selectedIdeaId)
     if (!exists) {
@@ -669,14 +633,35 @@ async function computeHomeStats() {
   const now = Date.now()
   let totalWords = 0
   let earliest = null
+  let hasAnyChapter = chapters.length > 0
 
   for (const chapter of chapters) {
     const plain = toPlainText(chapter.content_md ?? "")
     totalWords += countWords(plain)
-    const updatedAt = chapter.updated_local_at ?? null
-    if (updatedAt) {
-      earliest = earliest === null ? updatedAt : Math.min(earliest, updatedAt)
+    const candidate =
+      chapter.created_at ??
+      chapter.updated_at ??
+      chapter.updated_local_at ??
+      null
+    if (candidate) {
+      const stamp = new Date(candidate).getTime()
+      if (!Number.isNaN(stamp)) {
+        earliest = earliest === null ? stamp : Math.min(earliest, stamp)
+      }
     }
+  }
+
+  if (!hasAnyChapter) {
+    state.homeStats = {
+      totalWords: null,
+      wordsPerDay: null,
+      pagesTotal: null,
+      pagesPerDay: null,
+      timeSpent: null,
+      timePerDay: null,
+      favoriteTime: null
+    }
+    return
   }
 
   const days =
@@ -690,8 +675,10 @@ async function computeHomeStats() {
     wordsPerDay,
     pagesTotal,
     pagesPerDay,
+    // TODO: Track writing sessions to compute time spent and favorite time.
     timeSpent: null,
-    timePerDay: null
+    timePerDay: null,
+    favoriteTime: null
   }
 }
 
@@ -933,28 +920,6 @@ function getFilteredIdeas() {
   return items
 }
 
-function setIdeasDraftStatus(message) {
-  state.ideasDraftStatus = message
-  const statusEl = document.querySelector(".ideas-capture-status")
-  if (statusEl) {
-    statusEl.textContent = message
-  }
-  if (ideasDraftStatusTimer) {
-    clearTimeout(ideasDraftStatusTimer)
-    ideasDraftStatusTimer = null
-  }
-  if (message) {
-    ideasDraftStatusTimer = window.setTimeout(() => {
-      state.ideasDraftStatus = ""
-      const currentStatusEl = document.querySelector(".ideas-capture-status")
-      if (currentStatusEl) {
-        currentStatusEl.textContent = ""
-      }
-      ideasDraftStatusTimer = null
-    }, 900)
-  }
-}
-
 function queueIdeaPatch(id, patch, delay = 700) {
   if (!id) {
     return
@@ -977,13 +942,9 @@ async function applyIdeaPatch(id, patch, { render = false } = {}) {
   const updated = await updateIdea(id, patch)
   if (updated) {
     state.ideas = state.ideas.map((idea) => (idea.id === id ? updated : idea))
-    if (state.draftIdeaId === id && Object.prototype.hasOwnProperty.call(patch, "content")) {
-      state.draftIdeaText = updated.content ?? ""
-    }
   } else {
     state.ideas = await listIdeas({ projectId: state.ideasProjectId })
   }
-  setIdeasDraftStatus("Enregistree")
   if (render) {
     renderCurrentUI()
   }
@@ -1002,65 +963,24 @@ async function flushIdeaPatch(id, { render = false } = {}) {
   await applyIdeaPatch(id, patch, { render })
 }
 
-async function createIdeaFromDraft({ render = false } = {}) {
-  const content = state.draftIdeaText.trim()
-  if (!content || state.draftIdeaId) {
+async function handleIdeasCreateFromInput(content, { select = false } = {}) {
+  const trimmed = content.trim()
+  if (!trimmed) {
     return
   }
-  if (draftIdeaSaving) {
-    if (render) {
-      draftIdeaNeedsRender = true
-    }
-    return
-  }
-  draftIdeaSaving = true
-  const saveToken = ++draftIdeaSequence
-  try {
-    const created = await createIdea({
-      content,
-      status: "raw",
-      tags: [],
-      note: "",
-      project_id: state.ideasProjectId
-    })
-    if (saveToken !== draftIdeaSequence) {
-      return
-    }
-    state.ideas = await listIdeas({ projectId: state.ideasProjectId })
-    state.draftIdeaId = created?.id ?? null
-    state.selectedIdeaId = created?.id ?? null
-    setIdeasDraftStatus("Enregistree")
-    if (render || draftIdeaNeedsRender) {
-      renderCurrentUI()
-    }
-  } finally {
-    draftIdeaNeedsRender = false
-    draftIdeaSaving = false
-  }
-}
-
-async function handleIdeasCreate() {
-  clearIdeasDraftTimer()
-  if (state.draftIdeaId && ideaSaveTimers.has(state.draftIdeaId)) {
-    clearTimeout(ideaSaveTimers.get(state.draftIdeaId))
-    ideaSaveTimers.delete(state.draftIdeaId)
-    ideaPendingPatches.delete(state.draftIdeaId)
-  }
-  draftIdeaSequence += 1
-  draftIdeaNeedsRender = false
-  state.draftIdeaText = ""
-  state.draftIdeaId = null
-  state.selectedIdeaId = null
-  state.ideasNoteExpanded = false
-  setIdeasDraftStatus("")
-  renderCurrentUI()
-  window.requestAnimationFrame(() => {
-    const contentEl = document.querySelector("#ideas-new-content")
-    if (contentEl) {
-      contentEl.value = ""
-      contentEl.focus()
-    }
+  const created = await createIdea({
+    content: trimmed,
+    status: "raw",
+    tags: [],
+    note: "",
+    project_id: state.ideasProjectId
   })
+  state.ideas = await listIdeas({ projectId: state.ideasProjectId })
+  if (select && created?.id) {
+    state.selectedIdeaId = created.id
+    state.ideasNoteExpanded = false
+  }
+  renderCurrentUI()
 }
 
 async function handleIdeasUpdate(id, patch) {
@@ -1087,11 +1007,6 @@ async function handleIdeasDelete(id) {
   if (state.selectedIdeaId === id) {
     state.selectedIdeaId = state.ideas[0]?.id ?? null
     state.ideasNoteExpanded = false
-  }
-  if (state.draftIdeaId === id) {
-    state.draftIdeaId = null
-    state.draftIdeaText = ""
-    setIdeasDraftStatus("")
   }
   renderCurrentUI()
 }
@@ -1634,27 +1549,59 @@ async function handleProjectsCreate() {
   window.location.hash = `#/project/${result.data.id}/write`
 }
 
+function focusProjectRenameInput(projectId) {
+  if (!projectId) {
+    return
+  }
+  window.requestAnimationFrame(() => {
+    const input = document.querySelector(`.project-edit-input[data-id="${projectId}"]`)
+    if (input) {
+      input.focus()
+      input.select()
+    }
+  })
+}
+
+function markProjectRenameInvalid(projectId, message) {
+  if (!projectId) {
+    return
+  }
+  const input = document.querySelector(`.project-edit-input[data-id="${projectId}"]`)
+  if (input) {
+    input.setAttribute("aria-invalid", "true")
+    if (message) {
+      input.setAttribute("title", message)
+    }
+    input.focus()
+    input.select()
+  }
+  if (message) {
+    setStatus(message)
+  }
+}
+
 async function handleProjectsRename(id) {
   if (!id) {
     return
   }
   const project = state.projects.find((item) => item.id === id)
-  const currentTitle = project?.title ?? "Sans titre"
-  const nextTitle = window.prompt("Renommer le projet :", currentTitle)
-  if (nextTitle === null) {
+  if (!project) {
+    console.warn("project rename: project not found", id)
     return
   }
-  const title = nextTitle.trim() || "Sans titre"
-  const result = await renameProject(id, title)
-  if (!result.ok) {
-    setStatus(`Erreur: ${result.errorMessage}`)
-    return
-  }
-  await upsertProjectsLocal([result.data])
-  await loadLocalProjects({ allowFallback: false })
-  await loadProjectsStats()
+  state.editingProjectId = id
   state.projectsMenuOpenId = null
   renderCurrentUI()
+  focusProjectRenameInput(id)
+}
+
+async function handleProjectsRenameConfirm(id) {
+  if (!id) {
+    return
+  }
+  const input = document.querySelector(`.project-edit-input[data-id="${id}"]`)
+  const nextTitle = input ? input.value : ""
+  await commitProjectRename(id, nextTitle)
 }
 
 async function handleProjectsStatus(id, status) {
@@ -1664,6 +1611,7 @@ async function handleProjectsStatus(id, status) {
   await updateLocalProject(id, { status })
   await loadLocalProjects({ allowFallback: false })
   await loadProjectsStats()
+  await computeHomeStats()
   if (status === "archived" && getLastOpenedProjectId() === id) {
     setLastOpenedProjectId(null)
   }
@@ -1693,6 +1641,7 @@ async function handleProjectsDelete(id) {
   await deleteLocalProjectMindmap(id)
   await loadLocalProjects({ allowFallback: false })
   await loadProjectsStats()
+  await computeHomeStats()
 
   if (state.selectedProjectId === id) {
     state.selectedProjectId = null
@@ -1801,17 +1750,68 @@ async function handleHomeProjectDelete(id) {
 }
 
 async function commitProjectRename(projectId, nextTitle) {
-  const title = nextTitle.trim() || "Sans titre"
-  const result = await renameProject(projectId, title)
-  if (!result.ok) {
-    setStatus(`Erreur: ${result.errorMessage}`)
+  if (!projectId) {
+    return
+  }
+  if (projectRenamePending.has(projectId)) {
+    return
+  }
+  const project = state.projects.find((item) => item.id === projectId)
+  if (!project) {
+    console.warn("project rename: project not found", projectId)
+    state.editingProjectId = null
+    renderCurrentUI()
+    return
+  }
+  const rawTitle = typeof nextTitle === "string" ? nextTitle : ""
+  const title = rawTitle.trim()
+  if (!title) {
+    markProjectRenameInvalid(projectId, "Le titre ne peut pas etre vide.")
+    return
+  }
+  const oldTitle = project.title ?? "Sans titre"
+  if (title === oldTitle) {
+    state.editingProjectId = null
+    renderCurrentUI()
     return
   }
 
-  await upsertProjectsLocal([result.data])
-  await loadLocalProjects({ allowFallback: false })
-  state.editingProjectId = null
-  renderAppUI()
+  projectRenamePending.add(projectId)
+  let localUpdated = null
+  let remoteResult = null
+  try {
+    const nowIso = new Date().toISOString()
+    localUpdated = await updateLocalProject(projectId, { title, updated_at: nowIso })
+    if (localUpdated) {
+      state.projects = state.projects.map((item) =>
+        item.id === projectId ? localUpdated : item
+      )
+    }
+    state.editingProjectId = null
+    renderCurrentUI()
+
+    if (navigator.onLine) {
+      remoteResult = await renameProject(projectId, title)
+      if (!remoteResult.ok) {
+        setStatus(`Erreur: ${remoteResult.errorMessage}`)
+      } else {
+        await upsertProjectsLocal([remoteResult.data])
+        await loadLocalProjects({ allowFallback: false })
+      }
+    }
+  } finally {
+    if (DEBUG_RENAME) {
+      console.debug("project rename", {
+        projectId,
+        oldTitle,
+        newTitle: title,
+        idbUpdate: localUpdated,
+        remoteOk: remoteResult?.ok ?? null
+      })
+    }
+    projectRenamePending.delete(projectId)
+    renderCurrentUI()
+  }
 }
 
 async function handleChapterContentUpdate(content) {
@@ -1832,6 +1832,7 @@ async function handleChapterContentUpdate(content) {
   const chapterId = state.selectedChapterId
 
   autosaveTimer = window.setTimeout(async () => {
+    await computeHomeStats()
     await enqueueChapterUpsert(chapterId)
 
     if (navigator.onLine) {
@@ -1846,20 +1847,88 @@ async function handleChapterCreate() {
     setStatus("Cree un projet avant d'ajouter un chapitre.")
     return
   }
+  const project = state.projects.find((item) => item.id === state.selectedProjectId)
+  if (!project) {
+    setStatus("Projet introuvable. Recharge la liste des projets.")
+    return
+  }
 
   const title = window.prompt("Titre du chapitre")
   if (!title) {
     return
   }
+  const trimmedTitle = title.trim()
+  if (!trimmedTitle) {
+    setStatus("Le titre du chapitre ne peut pas etre vide.")
+    return
+  }
 
   const orderIndex = state.chapters.length
+
+  const createLocally = async (reasonLabel) => {
+    const localChapter = await createLocalChapter(
+      state.selectedProjectId,
+      trimmedTitle,
+      orderIndex
+    )
+    if (!localChapter) {
+      setStatus("Erreur: creation locale du chapitre impossible.")
+      return
+    }
+    await enqueueChapterUpsert(localChapter.id)
+    state.selectedChapterId = localChapter.id
+    setLastOpenedChapterId(localChapter.id)
+    await loadLocalChapters()
+    await loadLocalChapterDetail()
+    await loadVersionsForChapter(state.selectedChapterId)
+    setStatus(reasonLabel)
+    renderAppUI()
+  }
+
+  if (!navigator.onLine) {
+    await createLocally("Chapitre enregistre localement. Synchronisation en attente.")
+    return
+  }
+
+  const existsResult = await ensureProjectExists(state.selectedProjectId)
+  if (!existsResult.ok || !existsResult.exists) {
+    if (DEBUG_CHAPTER) {
+      console.debug("chapter create blocked: project missing", {
+        localProjectId: state.selectedProjectId,
+        cloudProjectId: state.selectedProjectId,
+        error: existsResult.errorMessage ?? null
+      })
+    }
+    await createLocally("Projet pas encore synchronise. Chapitre enregistre localement.")
+    return
+  }
+
   const result = await createChapter(
     state.selectedProjectId,
-    title.trim(),
+    trimmedTitle,
     orderIndex
   )
 
   if (!result.ok) {
+    const isFkError =
+      result.errorMessage?.includes("chapters_project_id_fkey") ||
+      result.errorMessage?.toLowerCase().includes("foreign key constraint")
+    if (DEBUG_CHAPTER) {
+      console.debug("chapter create failed", {
+        localProjectId: state.selectedProjectId,
+        cloudProjectId: state.selectedProjectId,
+        payload: {
+          project_id: state.selectedProjectId,
+          title: trimmedTitle,
+          order_index: orderIndex
+        },
+        error: result.errorMessage ?? null
+      })
+    }
+    if (isFkError) {
+      await createLocally("Projet non synchronise. Chapitre enregistre localement.")
+      return
+    }
     setStatus(`Erreur: ${result.errorMessage}`)
     return
   }
@@ -2125,6 +2194,17 @@ async function handleAutoSnapshot(chapterId) {
   }
 }
 
+const isWritingEditorFocused = () => {
+  if (!state.selectedChapterId || state.writingNav !== "chapter") {
+    return false
+  }
+  const active = document.activeElement
+  if (!active) {
+    return false
+  }
+  return Boolean(active.closest && active.closest(".ProseMirror"))
+}
+
 async function handleSyncResults(results) {
   if (!results || results.length === 0) {
     return
@@ -2145,6 +2225,10 @@ async function handleSyncResults(results) {
   }
 
   if (current.status === "synced") {
+    if (isWritingEditorFocused()) {
+      setStatus("Enregistre")
+      return
+    }
     await loadLocalChapterDetail()
     setStatus("Enregistre")
     renderAppUI()
@@ -2217,6 +2301,10 @@ app.addEventListener("click", async (event) => {
     if (!id) {
       return
     }
+    if (state.editingProjectId === id) {
+      return
+    }
+    state.editingProjectId = null
     setLastOpenedProjectId(id)
     state.projectsMenuOpenId = null
     window.location.hash = `#/project/${id}/write`
@@ -2240,6 +2328,21 @@ app.addEventListener("click", async (event) => {
     return
   }
 
+  if (action === "projects-rename-confirm") {
+    await handleProjectsRenameConfirm(actionTarget.dataset.id)
+    return
+  }
+
+  if (action === "projects-rename-cancel") {
+    state.editingProjectId = null
+    renderCurrentUI()
+    return
+  }
+
+  if (action === "projects-rename-input") {
+    return
+  }
+
   if (action === "projects-status") {
     await handleProjectsStatus(actionTarget.dataset.id, actionTarget.dataset.status)
     return
@@ -2247,11 +2350,6 @@ app.addEventListener("click", async (event) => {
 
   if (action === "projects-delete") {
     await handleProjectsDelete(actionTarget.dataset.id)
-    return
-  }
-
-  if (action === "ideas-create") {
-    await handleIdeasCreate()
     return
   }
 
@@ -2266,11 +2364,6 @@ app.addEventListener("click", async (event) => {
       }
       state.selectedIdeaId = id
       state.ideasNoteExpanded = false
-      const selected = state.ideas.find((idea) => idea.id === id)
-      if (selected) {
-        state.draftIdeaId = id
-        state.draftIdeaText = selected.content ?? ""
-      }
       renderCurrentUI()
     }
     return
@@ -2861,26 +2954,16 @@ app.addEventListener("input", async (event) => {
     return
   }
 
-  if (target.id === "character-filter") {
-    handleCharacterFilter(target.value)
+  if (target instanceof HTMLInputElement && target.classList.contains("project-edit-input")) {
+    if (target.getAttribute("aria-invalid") === "true") {
+      target.removeAttribute("aria-invalid")
+      target.removeAttribute("title")
+    }
     return
   }
 
-  if (target.id === "ideas-new-content") {
-    state.draftIdeaText = target.value
-    setIdeasDraftStatus("")
-    clearIdeasDraftTimer()
-    if (state.draftIdeaId && state.selectedIdeaId !== state.draftIdeaId) {
-      state.selectedIdeaId = state.draftIdeaId
-    }
-    if (state.draftIdeaId) {
-      queueIdeaPatch(state.draftIdeaId, { content: target.value })
-    } else if (target.value.trim()) {
-      ideasDraftTimer = window.setTimeout(() => {
-        createIdeaFromDraft({ render: false })
-        ideasDraftTimer = null
-      }, 900)
-    }
+  if (target.id === "character-filter") {
+    handleCharacterFilter(target.value)
     return
   }
 
@@ -2950,13 +3033,6 @@ app.addEventListener("input", async (event) => {
         queueIdeaPatch(id, { tags })
         return
       }
-      if (field === "content" && id === state.draftIdeaId) {
-        state.draftIdeaText = target.value
-        const captureEl = document.querySelector("#ideas-new-content")
-        if (captureEl && captureEl !== target) {
-          captureEl.value = target.value
-        }
-      }
       queueIdeaPatch(id, { [field]: target.value })
       return
     }
@@ -2979,16 +3055,6 @@ app.addEventListener("input", async (event) => {
 app.addEventListener("focusout", async (event) => {
   const target = event.target
   if (!(target instanceof Element)) {
-    return
-  }
-
-  if (target.id === "ideas-new-content") {
-    clearIdeasDraftTimer()
-    if (!state.draftIdeaId) {
-      await createIdeaFromDraft({ render: true })
-      return
-    }
-    await flushIdeaPatch(state.draftIdeaId, { render: true })
     return
   }
 
@@ -3228,8 +3294,25 @@ app.addEventListener("keydown", async (event) => {
   if (event.key === "Escape") {
     event.preventDefault()
     state.editingProjectId = null
-    renderAppUI()
+    renderCurrentUI()
   }
+})
+
+app.addEventListener("keydown", async (event) => {
+  const target = event.target
+  if (!(target instanceof HTMLTextAreaElement)) {
+    return
+  }
+  if (target.id !== "ideas-create-input") {
+    return
+  }
+  if (event.key !== "Enter" || event.shiftKey) {
+    return
+  }
+  event.preventDefault()
+  const value = target.value
+  await handleIdeasCreateFromInput(value)
+  target.value = ""
 })
 
 app.addEventListener("keydown", (event) => {
@@ -3244,6 +3327,9 @@ app.addEventListener("keydown", (event) => {
     event.preventDefault()
     const id = target.dataset.id
     if (!id) {
+      return
+    }
+    if (state.editingProjectId === id) {
       return
     }
     setLastOpenedProjectId(id)

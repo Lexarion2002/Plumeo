@@ -38,6 +38,33 @@ export async function listProjects() {
   }
 }
 
+export async function ensureProjectExists(projectId) {
+  const userResult = await getUserId()
+  if (!userResult.ok) {
+    return userResult
+  }
+  if (!projectId) {
+    return { ok: false, errorMessage: "Missing project id" }
+  }
+
+  try {
+    const { data, error } = await supabase
+      .from("projects")
+      .select("id")
+      .eq("id", projectId)
+      .eq("user_id", userResult.userId)
+      .maybeSingle()
+
+    if (error) {
+      return { ok: false, errorMessage: error.message }
+    }
+
+    return { ok: true, exists: Boolean(data) }
+  } catch (error) {
+    return { ok: false, errorMessage: error.message }
+  }
+}
+
 export async function createProject(title) {
   const userResult = await getUserId()
   if (!userResult.ok) {
@@ -144,6 +171,45 @@ export async function createChapter(projectId, title, orderIndex) {
         project_id: projectId,
         title,
         order_index: orderIndex,
+        user_id: userResult.userId
+      })
+      .select("id,project_id,title,order_index,revision,content_md")
+      .single()
+
+    if (error) {
+      return { ok: false, errorMessage: error.message }
+    }
+
+    return { ok: true, data }
+  } catch (error) {
+    return { ok: false, errorMessage: error.message }
+  }
+}
+
+export async function createChapterWithId({
+  id,
+  projectId,
+  title,
+  orderIndex,
+  contentMd = ""
+}) {
+  const userResult = await getUserId()
+  if (!userResult.ok) {
+    return userResult
+  }
+  if (!id || !projectId) {
+    return { ok: false, errorMessage: "Missing chapter id or project id" }
+  }
+
+  try {
+    const { data, error } = await supabase
+      .from("chapters")
+      .insert({
+        id,
+        project_id: projectId,
+        title,
+        order_index: orderIndex,
+        content_md: contentMd,
         user_id: userResult.userId
       })
       .select("id,project_id,title,order_index,revision,content_md")

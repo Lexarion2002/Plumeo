@@ -174,19 +174,26 @@ export function renderHome({
     ? formatDate(new Date(lastCloudSaveAt).toISOString())
     : "-"
   const stats = homeStats ?? {
-    totalWords: 0,
-    wordsPerDay: 0,
-    pagesTotal: 0,
-    pagesPerDay: 0,
+    totalWords: null,
+    wordsPerDay: null,
+    pagesTotal: null,
+    pagesPerDay: null,
     timeSpent: null,
-    timePerDay: null
+    timePerDay: null,
+    favoriteTime: null
   }
-  const timeTotalLabel = stats.timeSpent ? stats.timeSpent : "�"
-  const timePerDayLabel = stats.timePerDay ? stats.timePerDay : "�"
-  const wordsTotalLabel = `${stats.totalWords} mots`
-  const wordsPerDayLabel = `${stats.wordsPerDay} mots par jour`
-  const pagesTotalLabel = `${stats.pagesTotal}`
-  const pagesPerDayLabel = `${stats.pagesPerDay.toFixed(1)} pages par jour`
+  const withDash = (value, formatter) =>
+    value === null || value === undefined ? "--" : formatter(value)
+  const wordsTotalLabel = withDash(stats.totalWords, (value) => `${value} mots`)
+  const wordsPerDayLabel = withDash(
+    stats.wordsPerDay,
+    (value) => `${value} mots`
+  )
+  const pagesTotalLabel = withDash(stats.pagesTotal, (value) => `${value}`)
+  const pagesPerDayLabel = withDash(
+    stats.pagesPerDay,
+    (value) => `${value.toFixed(1)} pages`
+  )
 
   const projectCards = projects
     .map((project) => {
@@ -292,7 +299,7 @@ export function renderHome({
                   <section class="home-analysis-card home-analysis-insight">
                     <h3>Moment pr&eacute;f&eacute;r&eacute; pour &eacute;crire</h3>
                     <div class="home-analysis-insight-visual"></div>
-                    <p class="home-analysis-insight-text">Moment pr&eacute;f&eacute;r&eacute; pour &eacute;crire : --</p>
+                    <p class="home-analysis-insight-text">Moment pr&eacute;f&eacute;r&eacute; pour &eacute;crire : ${stats.favoriteTime ?? "--"}</p>
                   </section>
                 </div>
               </div>
@@ -311,9 +318,7 @@ function renderIdeasContent({
   ideasTagFilter = "",
   ideasStatusFilter = "all",
   ideasSort = "desc",
-  draftIdeaText = "",
   ideasFiltersOpen = false,
-  ideasDraftStatus = "",
   ideasNoteExpanded = false
 } = {}) {
   const selectedIdea = ideas.find((idea) => idea.id === selectedIdeaId) ?? null
@@ -436,18 +441,16 @@ function renderIdeasContent({
     : ""
 
   return `
-    <section class="ideas-capture panel card">
+    <section class="ideas-create panel card">
+      <h3>Ajouter une idee</h3>
       <textarea
-        id="ideas-new-content"
-        class="input ideas-capture-input"
-        rows="4"
+        id="ideas-create-input"
+        class="input ideas-create-input"
+        rows="3"
         placeholder="Une phrase, une scene, un concept, une question..."
-        aria-label="Deposer une idee"
-      >${draftIdeaText ?? ""}</textarea>
-      <div class="ideas-capture-foot">
-        <span class="ideas-capture-hint">Enregistree automatiquement</span>
-        <span class="ideas-capture-status">${ideasDraftStatus}</span>
-      </div>
+        aria-label="Ajouter une idee"
+      ></textarea>
+      <div class="ideas-create-hint">↵ Entree pour ajouter</div>
     </section>
 
     <section class="ideas-controls">
@@ -468,7 +471,7 @@ function renderIdeasContent({
 
     <div class="ideas-layout ideas-layout--master-detail">
       <div class="ideas-list">
-        ${ideaItems || `<p class="ideas-empty">Ecris une premiere idee ci-dessus.</p>`}
+        ${ideaItems || `<p class="ideas-empty">Ajoute une idee ci-dessus.</p>`}
       </div>
       <div class="ideas-detail">
         ${detailPanel}
@@ -485,9 +488,7 @@ export function renderIdeas({
   ideasTagFilter = "",
   ideasStatusFilter = "all",
   ideasSort = "desc",
-  draftIdeaText = "",
   ideasFiltersOpen = false,
-  ideasDraftStatus = "",
   ideasNoteExpanded = false,
   lastProjectId = null,
   lastCloudSaveAt = null,
@@ -503,9 +504,7 @@ export function renderIdeas({
     ideasTagFilter,
     ideasStatusFilter,
     ideasSort,
-    draftIdeaText,
     ideasFiltersOpen,
-    ideasDraftStatus,
     ideasNoteExpanded
   })
 
@@ -524,6 +523,7 @@ export function renderProjects({
   projects = [],
   projectStats = {},
   projectsMenuOpenId = null,
+  editingProjectId = null,
   lastProjectId = null,
   lastCloudSaveAt = null,
   cloudBusy = false,
@@ -567,6 +567,32 @@ export function renderProjects({
       const statusBadge = status !== "active"
         ? `<span class="project-status status-${status}">${statusLabel}</span>`
         : ""
+      const isEditing = editingProjectId === project.id
+      const titleMarkup = isEditing
+        ? `
+            <div class="project-title-edit">
+              <input
+                class="project-edit-input"
+                data-action="projects-rename-input"
+                data-id="${project.id}"
+                type="text"
+                value="${project.title ?? ""}"
+                placeholder="Sans titre"
+                spellcheck="false"
+              />
+              <div class="project-title-actions">
+                <button type="button" class="btn btn-secondary btn-compact" data-action="projects-rename-confirm" data-id="${project.id}">OK</button>
+                <button type="button" class="btn btn-ghost btn-compact" data-action="projects-rename-cancel" data-id="${project.id}">Annuler</button>
+              </div>
+            </div>
+            ${activeBadge}
+            ${statusBadge}
+          `
+        : `
+            <h3>${project.title ?? "Sans titre"}</h3>
+            ${activeBadge}
+            ${statusBadge}
+          `
       const menuOpen = projectsMenuOpenId === project.id
       const menu = menuOpen
         ? `
@@ -590,9 +616,7 @@ export function renderProjects({
         >
           <div class="project-card-main">
             <div class="project-card-title">
-              <h3>${project.title ?? "Sans titre"}</h3>
-              ${activeBadge}
-              ${statusBadge}
+              ${titleMarkup}
             </div>
             <div class="project-card-meta">
               <span class="project-card-info">Derniere modification : ${updatedLabel} · ${chapterText} · ${wordText}</span>
@@ -1089,9 +1113,7 @@ export function renderApp({
   ideasTagFilter = "",
   ideasStatusFilter = "all",
   ideasSort = "desc",
-  draftIdeaText = "",
   ideasFiltersOpen = false,
-  ideasDraftStatus = "",
   ideasNoteExpanded = false,
   mindmapNodes = [],
   mindmapEdges = [],
@@ -1729,9 +1751,7 @@ export function renderApp({
               ideasTagFilter,
               ideasStatusFilter,
               ideasSort,
-              draftIdeaText,
               ideasFiltersOpen,
-              ideasDraftStatus,
               ideasNoteExpanded
             })}
           </div>
@@ -1782,13 +1802,6 @@ export function renderApp({
     <section class="page-shell writing-page">
       ${renderTopBar({ userEmail, activeRoute: "projects", lastProjectId: selectedProjectId, lastCloudSaveAt, cloudBusy, accountMenuOpen, backupStatus, backupMenuOpen })}
       <div class="page app-shell">
-        <div class="writing-context">
-          <span>Projets</span>
-          <span class="writing-context-sep">></span>
-          <span>${projectTitleLabel}</span>
-          <span class="writing-context-sep">></span>
-          <span>${writingContextLabel}</span>
-        </div>
         <div class="writing-layout${writingNav === "chapter" ? " with-chapter" : ""}">
         <aside class="writing-sidebar editor-sidebar">
           <section class="panel card writing-nav">

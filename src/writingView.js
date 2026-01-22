@@ -1,7 +1,5 @@
-import { Editor, Extension, Node } from "@tiptap/core"
+import { Editor, Extension } from "@tiptap/core"
 import StarterKit from "@tiptap/starter-kit"
-import { Plugin, PluginKey } from "prosemirror-state"
-import { Decoration, DecorationSet } from "prosemirror-view"
 import { Highlight } from "@tiptap/extension-highlight"
 import { TextAlign } from "@tiptap/extension-text-align"
 import { TextStyle } from "@tiptap/extension-text-style"
@@ -12,29 +10,6 @@ let toolbarHandler = null
 let paperShellElement = null
 let resizeHandler = null
 let resizeFrame = null
-
-const paginationKey = new PluginKey("pagination")
-const wordCountKey = new PluginKey("wordCount")
-
-const DocumentNode = Node.create({
-  name: "doc",
-  topNode: true,
-  content: "page+"
-})
-
-const PageNode = Node.create({
-  name: "page",
-  group: "block",
-  content: "block+",
-  defining: true,
-  isolating: true,
-  parseHTML() {
-    return [{ tag: "div[data-type=\"page\"]" }]
-  },
-  renderHTML({ HTMLAttributes }) {
-    return ["div", { ...HTMLAttributes, "data-type": "page", class: "page-node" }, 0]
-  }
-})
 
 const FontSize = Extension.create({
   name: "fontSize",
@@ -71,62 +46,35 @@ const FontSize = Extension.create({
   }
 })
 
-function countWords(text) {
-  const trimmed = text.trim()
-  if (!trimmed) {
-    return 0
-  }
-  const matches = trimmed.match(/\S+/g)
-  return matches ? matches.length : 0
-}
-
-const WordCount = Extension.create({
-  name: "wordCount",
-  addProseMirrorPlugins() {
-    return [
-      new Plugin({
-        key: wordCountKey,
-        props: {
-          decorations(state) {
-            const selectionPos = state.selection?.from ?? 0
-            const pageType = state.schema.nodes.page
-            if (!pageType) {
-              return null
-            }
-
-            let target = null
-            state.doc.descendants((node, pos) => {
-              if (node.type === pageType) {
-                const start = pos
-                const end = pos + node.nodeSize
-                if (selectionPos >= start && selectionPos < end) {
-                  target = { node, pos }
-                  return false
-                }
-              }
-              return true
-            })
-
-            if (!target) {
-              return null
-            }
-
-            const words = countWords(target.node.textContent)
-            const label = `${words} mot${words === 1 ? "" : "s"}`
-            const widget = document.createElement("div")
-            widget.className = "page-word-count"
-            widget.textContent = label
-
-            const widgetPos = target.pos + target.node.nodeSize - 1
-            const decoration = Decoration.widget(widgetPos, widget, {
-              key: "page-word-count",
-              side: 1
-            })
-            return DecorationSet.create(state.doc, [decoration])
-          }
+const TabIndent = Extension.create({
+  name: "tabIndent",
+  addKeyboardShortcuts() {
+    return {
+      Tab: () => {
+        if (this.editor.isActive("listItem")) {
+          return false
         }
-      })
-    ]
+        return this.editor.commands.insertContent("\t")
+      },
+      "Shift-Tab": () => {
+        if (this.editor.isActive("listItem")) {
+          return false
+        }
+        const { state } = this.editor
+        const { from, empty } = state.selection
+        if (!empty || from <= 1) {
+          return this.editor.commands.command(() => true)
+        }
+        const beforeChar = state.doc.textBetween(from - 1, from, "\0", "\0")
+        if (beforeChar !== "\t") {
+          return this.editor.commands.command(() => true)
+        }
+        return this.editor.commands.command(({ tr }) => {
+          tr.delete(from - 1, from)
+          return true
+        })
+      }
+    }
   }
 })
 
@@ -154,15 +102,32 @@ function isHtml(value) {
   return /<\/?[a-z][\s\S]*>/i.test(value)
 }
 
+function stripPageWrappers(html) {
+  if (!html.includes("data-type=\"page\"")) {
+    return html
+  }
+  const container = document.createElement("div")
+  container.innerHTML = html
+  const pages = Array.from(container.querySelectorAll("div[data-type=\"page\"]"))
+  for (const page of pages) {
+    const parent = page.parentNode
+    if (!parent) {
+      continue
+    }
+    while (page.firstChild) {
+      parent.insertBefore(page.firstChild, page)
+    }
+    parent.removeChild(page)
+  }
+  return container.innerHTML
+}
+
 function normalizeContent(content) {
   if (!content) {
     return "<p></p>"
   }
   const html = isHtml(content) ? content : textToHtml(content)
-  if (html.includes("data-type=\"page\"")) {
-    return html
-  }
-  return `<div data-type="page">${html}</div>`
+  return stripPageWrappers(html)
 }
 
 function updateToolbarState() {
@@ -312,174 +277,6 @@ function handleToolbarChange(event) {
   updateToolbarState()
 }
 
-function parsePx(value) {
-  const parsed = Number.parseFloat(value)
-  return Number.isNaN(parsed) ? 0 : parsed
-}
-
-const Pagination = Extension.create({
-  name: "pagination",
-  addProseMirrorPlugins() {
-    return [
-      new Plugin({
-        key: paginationKey,
-        view(view) {
-          let pending = null
-          let lastWidth = view.dom.clientWidth
-          let isPaginating = false
-
-          const getPageMetrics = () => {
-            const shellStyles = paperShellElement
-              ? window.getComputedStyle(paperShellElement)
-              : null
-            const pageHeight =
-              parsePx(shellStyles?.getPropertyValue("--page-height")) || 1160
-            const pagePadding =
-              parsePx(shellStyles?.getPropertyValue("--page-padding")) || 48
-            const footerSpace =
-              parsePx(shellStyles?.getPropertyValue("--page-footer-space")) || 0
-            return { pageHeight, padding: pagePadding, footerSpace }
-          }
-
-          const splitPageAt = (state, pos) => {
-            const resolved = state.doc.resolve(pos)
-            let pageDepth = null
-            for (let depth = resolved.depth; depth > 0; depth -= 1) {
-              if (resolved.node(depth).type === state.schema.nodes.page) {
-                pageDepth = depth
-                break
-              }
-            }
-            if (!pageDepth) {
-              return null
-            }
-            const depthToSplit = resolved.depth - pageDepth + 1
-            return state.tr.split(pos, depthToSplit)
-          }
-
-          const isPageEmpty = (node) => {
-            if (!node || node.type.name !== "page") {
-              return false
-            }
-            return node.textContent.trim() === "" && node.childCount <= 1
-          }
-
-          const paginate = () => {
-            if (isPaginating) {
-              return
-            }
-            isPaginating = true
-
-            const { state } = view
-            const pageType = state.schema.nodes.page
-            if (!pageType || !paperShellElement) {
-              isPaginating = false
-              return
-            }
-
-            const pageDoms = Array.from(view.dom.querySelectorAll(".page-node"))
-            const pageNodes = []
-            state.doc.descendants((node, pos) => {
-              if (node.type === pageType) {
-                pageNodes.push({ node, pos })
-              }
-            })
-
-            if (pageNodes.length === 0 || pageDoms.length === 0) {
-              isPaginating = false
-              return
-            }
-
-            const selectionPos = state.selection?.from ?? 0
-            let targetIndex = pageNodes.length - 1
-            for (let i = 0; i < pageNodes.length; i += 1) {
-              const start = pageNodes[i].pos
-              const end = start + pageNodes[i].node.nodeSize
-              if (selectionPos >= start && selectionPos < end) {
-                targetIndex = i
-                break
-              }
-            }
-
-            const pageDom = pageDoms[targetIndex]
-            const pageInfo = pageNodes[targetIndex]
-            if (!pageDom || !pageInfo) {
-              isPaginating = false
-              return
-            }
-
-            const { pageHeight, padding, footerSpace } = getPageMetrics()
-            const limit = pageHeight - padding - footerSpace
-
-            if (pageDom.scrollHeight > pageHeight + 1) {
-              const pageRect = pageDom.getBoundingClientRect()
-              const pageStart = pageInfo.pos + 1
-              const pageEnd = pageInfo.pos + pageInfo.node.content.size
-              const coords = view.posAtCoords({
-                left: pageRect.left + padding + 8,
-                top: pageRect.top + limit - 4
-              })
-              const splitPos = coords?.pos ?? null
-
-              if (splitPos && splitPos > pageStart + 1 && splitPos < pageEnd - 1) {
-                const tr = splitPageAt(state, splitPos)
-                if (tr) {
-                  view.dispatch(tr)
-                  isPaginating = false
-                  return paginate()
-                }
-              }
-            }
-
-            const lastPage = pageNodes[pageNodes.length - 1]?.node
-            if (pageNodes.length > 1 && isPageEmpty(lastPage)) {
-              const lastPos = pageNodes[pageNodes.length - 1].pos
-              const tr = state.tr.delete(lastPos, lastPos + lastPage.nodeSize)
-              view.dispatch(tr)
-            }
-
-            isPaginating = false
-          }
-
-          const schedule = (immediate = false) => {
-            if (pending) {
-              return
-            }
-
-            const delay = immediate ? 0 : 200
-            pending = window.setTimeout(() => {
-              pending = null
-              paginate()
-            }, delay)
-          }
-
-          paginate()
-
-          return {
-            update(view, prevState) {
-              const width = view.dom.clientWidth
-              const docChanged = !view.state.doc.eq(prevState.doc)
-              const widthChanged = width !== lastWidth
-              const forced = view.state.tr.getMeta(paginationKey)
-
-              if (docChanged || widthChanged || forced) {
-                lastWidth = width
-                schedule(widthChanged || forced)
-              }
-            },
-            destroy() {
-              if (pending) {
-                clearTimeout(pending)
-                pending = null
-              }
-            }
-          }
-        }
-      })
-    ]
-  }
-})
-
 function updatePaperMetrics() {
   if (!paperShellElement) {
     return
@@ -491,14 +288,10 @@ function updatePaperMetrics() {
   }
 
   const width = Math.min(980, Math.max(640, available))
-  const height = Math.round(width * 1.414)
   const padding = Math.round(Math.min(56, Math.max(32, width * 0.06)))
-  const footerSpace = Math.round(Math.max(20, padding * 0.6))
 
   paperShellElement.style.setProperty("--page-width", `${width}px`)
-  paperShellElement.style.setProperty("--page-height", `${height}px`)
   paperShellElement.style.setProperty("--page-padding", `${padding}px`)
-  paperShellElement.style.setProperty("--page-footer-space", `${footerSpace}px`)
 }
 
 function schedulePaperMetrics() {
@@ -509,11 +302,6 @@ function schedulePaperMetrics() {
   resizeFrame = window.requestAnimationFrame(() => {
     resizeFrame = null
     updatePaperMetrics()
-    if (editorInstance) {
-      editorInstance.view.dispatch(
-        editorInstance.view.state.tr.setMeta(paginationKey, true)
-      )
-    }
   })
 }
 
@@ -544,15 +332,12 @@ export function mountWritingView({ content = "", onUpdate } = {}) {
   editorInstance = new Editor({
     element: editorElement,
     extensions: [
-      DocumentNode,
-      PageNode,
-      Pagination,
-      WordCount,
-      StarterKit.configure({ document: false, gapcursor: false }),
+      StarterKit.configure({ gapcursor: false }),
       TextAlign.configure({ types: ["paragraph", "heading"] }),
       Highlight,
       TextStyle,
-      FontSize
+      FontSize,
+      TabIndent
     ],
     content: normalizeContent(content),
     onUpdate({ editor }) {

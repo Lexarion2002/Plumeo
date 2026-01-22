@@ -25,7 +25,8 @@ function buildChapterLocal(remote, existing) {
     conflict: base.conflict ?? false,
     server_copy: base.server_copy ?? null,
     updated_local_at: base.updated_local_at ?? null,
-    last_snapshot_at: base.last_snapshot_at ?? null
+    last_snapshot_at: base.last_snapshot_at ?? null,
+    pending_create: false
   }
 }
 
@@ -147,11 +148,43 @@ export async function saveLocalChapterDraft(id, patch) {
     conflict: current?.conflict ?? false,
     server_copy: current?.server_copy ?? null,
     updated_local_at: Date.now(),
-    last_snapshot_at: patch.last_snapshot_at ?? current?.last_snapshot_at ?? null
+    last_snapshot_at: patch.last_snapshot_at ?? current?.last_snapshot_at ?? null,
+    pending_create: current?.pending_create ?? false
   }
 
   await idbPut("chapters", next)
   return next
+}
+
+function buildLocalChapterId() {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID()
+  }
+  return `${Date.now()}-${Math.random().toString(16).slice(2)}`
+}
+
+export async function createLocalChapter(projectId, title, orderIndex) {
+  if (!projectId) {
+    return null
+  }
+  const now = Date.now()
+  const chapter = {
+    id: buildLocalChapterId(),
+    project_id: projectId,
+    title,
+    content_md: "",
+    order_index: orderIndex ?? 0,
+    remote_revision: 0,
+    dirty: true,
+    conflict: false,
+    server_copy: null,
+    updated_local_at: now,
+    last_snapshot_at: null,
+    pending_create: true,
+    created_at: now
+  }
+  await idbPut("chapters", chapter)
+  return chapter
 }
 
 

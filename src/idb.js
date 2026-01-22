@@ -2,6 +2,7 @@ const DB_NAME = "writer_db"
 const DB_VERSION = 6
 
 let dbPromise = null
+let dbInstance = null
 
 function openDb() {
   if (dbPromise) {
@@ -39,49 +40,102 @@ function openDb() {
       }
     }
 
-    request.onsuccess = () => resolve(request.result)
-    request.onerror = () => reject(request.error)
+    request.onsuccess = () => {
+      dbInstance = request.result
+      dbInstance.onversionchange = () => {
+        try {
+          dbInstance.close()
+        } catch (error) {
+          // Ignore close errors; reopening will recreate the connection.
+        }
+        dbInstance = null
+        dbPromise = null
+      }
+      resolve(dbInstance)
+    }
+    request.onerror = () => {
+      dbPromise = null
+      reject(request.error)
+    }
+    request.onblocked = () => {
+      // Another tab is upgrading; keep the promise pending until unblocked.
+    }
   })
 
   return dbPromise
 }
 
+const isRetryableError = (error) =>
+  error &&
+  ["InvalidStateError", "TransactionInactiveError", "AbortError"].includes(
+    error.name
+  )
+
+async function withDb(action, retries = 1) {
+  try {
+    const db = await openDb()
+    return await action(db)
+  } catch (error) {
+    if (retries > 0 && isRetryableError(error)) {
+      if (dbInstance) {
+        try {
+          dbInstance.close()
+        } catch (closeError) {
+          // Ignore close errors; retry will reopen.
+        }
+      }
+      dbInstance = null
+      dbPromise = null
+      return withDb(action, retries - 1)
+    }
+    throw error
+  }
+}
+
 export async function idbPut(store, value) {
-  const db = await openDb()
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(store, "readwrite")
-    tx.oncomplete = () => resolve()
-    tx.onerror = () => reject(tx.error)
-    tx.objectStore(store).put(value)
-  })
+  return withDb(
+    (db) =>
+      new Promise((resolve, reject) => {
+        const tx = db.transaction(store, "readwrite")
+        tx.oncomplete = () => resolve()
+        tx.onerror = () => reject(tx.error)
+        tx.objectStore(store).put(value)
+      })
+  )
 }
 
 export async function idbGet(store, key) {
-  const db = await openDb()
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(store, "readonly")
-    const request = tx.objectStore(store).get(key)
-    request.onsuccess = () => resolve(request.result)
-    request.onerror = () => reject(request.error)
-  })
+  return withDb(
+    (db) =>
+      new Promise((resolve, reject) => {
+        const tx = db.transaction(store, "readonly")
+        const request = tx.objectStore(store).get(key)
+        request.onsuccess = () => resolve(request.result)
+        request.onerror = () => reject(request.error)
+      })
+  )
 }
 
 export async function idbGetAll(store) {
-  const db = await openDb()
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(store, "readonly")
-    const request = tx.objectStore(store).getAll()
-    request.onsuccess = () => resolve(request.result)
-    request.onerror = () => reject(request.error)
-  })
+  return withDb(
+    (db) =>
+      new Promise((resolve, reject) => {
+        const tx = db.transaction(store, "readonly")
+        const request = tx.objectStore(store).getAll()
+        request.onsuccess = () => resolve(request.result)
+        request.onerror = () => reject(request.error)
+      })
+  )
 }
 
 export async function idbDel(store, key) {
-  const db = await openDb()
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(store, "readwrite")
-    tx.oncomplete = () => resolve()
-    tx.onerror = () => reject(tx.error)
-    tx.objectStore(store).delete(key)
-  })
+  return withDb(
+    (db) =>
+      new Promise((resolve, reject) => {
+        const tx = db.transaction(store, "readwrite")
+        tx.oncomplete = () => resolve()
+        tx.onerror = () => reject(tx.error)
+        tx.objectStore(store).delete(key)
+      })
+  )
 }

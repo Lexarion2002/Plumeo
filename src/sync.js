@@ -1,6 +1,13 @@
 import { idbDel, idbGetAll, idbPut } from "./idb.js"
 import { getLocalChapter } from "./localStore.js"
-import { fetchChapter, rpcUpdateChapterIfRevision } from "./api.js"
+import {
+  createChapterWithId,
+  ensureProjectExists,
+  fetchChapter,
+  rpcUpdateChapterIfRevision
+} from "./api.js"
+
+const DEBUG_CHAPTER = import.meta.env.DEV
 
 function normalizeRevision(value) {
   if (typeof value === "number") {
@@ -61,6 +68,62 @@ export async function syncOnce() {
     const local = await getLocalChapter(op.chapterId)
     if (!local) {
       await idbDel("outbox", op.opId)
+      continue
+    }
+
+    if (local.pending_create) {
+      const existsResult = await ensureProjectExists(local.project_id)
+      if (!existsResult.ok || !existsResult.exists) {
+        if (DEBUG_CHAPTER) {
+          console.debug("sync pending chapter: project missing", {
+            chapterId: local.id,
+            localProjectId: local.project_id,
+            cloudProjectId: local.project_id,
+            error: existsResult.errorMessage ?? null
+          })
+        }
+        continue
+      }
+
+      const created = await createChapterWithId({
+        id: local.id,
+        projectId: local.project_id,
+        title: local.title ?? "",
+        orderIndex: local.order_index ?? 0,
+        contentMd: local.content_md ?? ""
+      })
+
+      if (!created.ok) {
+        if (DEBUG_CHAPTER) {
+          console.debug("sync pending chapter: create failed", {
+            chapterId: local.id,
+            localProjectId: local.project_id,
+            cloudProjectId: local.project_id,
+            payload: {
+              id: local.id,
+              project_id: local.project_id,
+              title: local.title ?? "",
+              order_index: local.order_index ?? 0
+            },
+            error: created.errorMessage ?? null
+          })
+        }
+        continue
+      }
+
+      const syncedChapter = {
+        ...local,
+        ...created.data,
+        content_md: created.data.content_md ?? local.content_md ?? "",
+        remote_revision: created.data.revision ?? local.remote_revision ?? 0,
+        dirty: false,
+        conflict: false,
+        server_copy: null,
+        pending_create: false
+      }
+      await idbPut("chapters", syncedChapter)
+      await idbDel("outbox", op.opId)
+      results.push({ chapterId: local.id, status: "synced" })
       continue
     }
 
