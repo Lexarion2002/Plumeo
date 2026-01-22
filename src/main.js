@@ -194,7 +194,10 @@ async function ensureCloudBootstrap() {
   }
 
   cloudBootstrapDone = true
-  const result = await loadFromCloud({ applyIfNewer: true })
+  const hostname = window.location.hostname
+  const forceCloudLoad =
+    hostname && hostname !== "localhost" && hostname !== "127.0.0.1"
+  const result = await loadFromCloud({ applyIfNewer: !forceCloudLoad })
   if (!result.ok) {
     console.error("cloud bootstrap error", result.errorMessage)
     return
