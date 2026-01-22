@@ -143,6 +143,7 @@ let cloudAutosaveTimer = null
 let syncStarted = false
 let currentUserEmail = ""
 let cloudBootstrapDone = false
+let cloudLoadedFromStorage = false
 let dragChapterId = null
 let dragOverChapterId = null
 const characterSaveTimers = new Map()
@@ -201,6 +202,10 @@ async function ensureCloudBootstrap() {
   if (!result.ok) {
     console.error("cloud bootstrap error", result.errorMessage)
     return
+  }
+
+  if (!result.skipped) {
+    cloudLoadedFromStorage = true
   }
 
   if (result.savedAt && Number.isFinite(result.savedAt)) {
@@ -593,12 +598,14 @@ async function loadHomeView() {
   await updateLastChapterTitle()
   renderCurrentUI()
 
-  await pullProjectsFromCloud()
-  await loadLocalProjects()
-  await loadInboxItems()
-  await computeHomeStats()
-  await updateLastChapterTitle()
-  renderCurrentUI()
+  if (!cloudLoadedFromStorage) {
+    await pullProjectsFromCloud()
+    await loadLocalProjects()
+    await loadInboxItems()
+    await computeHomeStats()
+    await updateLastChapterTitle()
+    renderCurrentUI()
+  }
 }
 
 async function loadProjectsView() {
@@ -607,10 +614,12 @@ async function loadProjectsView() {
   await loadProjectsStats()
   renderCurrentUI()
 
-  await pullProjectsFromCloud()
-  await loadLocalProjects({ allowFallback: false })
-  await loadProjectsStats()
-  renderCurrentUI()
+  if (!cloudLoadedFromStorage) {
+    await pullProjectsFromCloud()
+    await loadLocalProjects({ allowFallback: false })
+    await loadProjectsStats()
+    renderCurrentUI()
+  }
 }
 
 async function loadIdeasView({ projectId = null, render = true } = {}) {
@@ -1330,6 +1339,9 @@ async function handleCloudLoad() {
 
   const result = await loadFromCloud()
   if (result.ok) {
+    if (!result.skipped) {
+      cloudLoadedFromStorage = true
+    }
     await loadLocalProjects({ allowFallback: false })
     await computeHomeStats()
     await updateLastChapterTitle()
@@ -1532,16 +1544,18 @@ async function loadEditorView(projectId) {
   await loadVersionsForChapter(state.selectedChapterId)
   renderAppUI()
 
-  await pullChaptersFromCloud(projectId)
-  await loadLocalChapterDetail()
-  await loadLocalCharacters()
-  await loadLocalInspiration()
-  await loadLocalMindmap()
-  if (state.selectedChapterId) {
-    setLastOpenedChapterId(state.selectedChapterId)
+  if (!cloudLoadedFromStorage) {
+    await pullChaptersFromCloud(projectId)
+    await loadLocalChapterDetail()
+    await loadLocalCharacters()
+    await loadLocalInspiration()
+    await loadLocalMindmap()
+    if (state.selectedChapterId) {
+      setLastOpenedChapterId(state.selectedChapterId)
+    }
+    await loadVersionsForChapter(state.selectedChapterId)
+    renderAppUI()
   }
-  await loadVersionsForChapter(state.selectedChapterId)
-  renderAppUI()
 }
 
 async function handleProjectCreate() {
@@ -3406,6 +3420,7 @@ async function render() {
   app.innerHTML = renderLogin({ message: props.message })
   setCloudAutosaveActive(false)
   cloudBootstrapDone = false
+  cloudLoadedFromStorage = false
 
   const signInButton = document.querySelector("#sign-in")
   const signUpButton = document.querySelector("#sign-up")
