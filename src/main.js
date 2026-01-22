@@ -194,12 +194,7 @@ async function ensureCloudBootstrap() {
   }
 
   cloudBootstrapDone = true
-  const localProjects = await getLocalProjects()
-  if (localProjects.length > 0) {
-    return
-  }
-
-  const result = await loadFromCloud()
+  const result = await loadFromCloud({ applyIfNewer: true })
   if (!result.ok) {
     console.error("cloud bootstrap error", result.errorMessage)
     return

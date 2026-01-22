@@ -1,7 +1,12 @@
 import { supabase } from "./supabaseClient.js"
 import { getUserId } from "./api.js"
 import { idbGetAll, idbPut } from "./idb.js"
-import { setLastCloudSaveAt, upsertChaptersLocal, upsertProjectsLocal } from "./localStore.js"
+import {
+  getLastCloudSaveAt,
+  setLastCloudSaveAt,
+  upsertChaptersLocal,
+  upsertProjectsLocal
+} from "./localStore.js"
 
 const CLOUD_BUCKET = "Bucketplumeo"
 const CLOUD_FILENAME = "latest.json"
@@ -52,7 +57,7 @@ export async function saveToCloud() {
   }
 }
 
-export async function loadFromCloud() {
+export async function loadFromCloud({ applyIfNewer = false } = {}) {
   const userResult = await getUserId()
   if (!userResult.ok) {
     return userResult
@@ -72,6 +77,17 @@ export async function loadFromCloud() {
     const parsed = JSON.parse(text)
     const savedAtRaw = parsed?.saved_at
     const savedAt = savedAtRaw ? Date.parse(savedAtRaw) : null
+    const localSavedAt = getLastCloudSaveAt()
+    if (
+      applyIfNewer &&
+      savedAt &&
+      Number.isFinite(savedAt) &&
+      localSavedAt &&
+      Number.isFinite(localSavedAt) &&
+      savedAt <= localSavedAt
+    ) {
+      return { ok: true, savedAt, skipped: true }
+    }
     const projects = Array.isArray(parsed?.projects) ? parsed.projects : []
     const chapters = Array.isArray(parsed?.chapters) ? parsed.chapters : []
     const characters = Array.isArray(parsed?.characters) ? parsed.characters : []
