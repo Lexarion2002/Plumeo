@@ -1353,9 +1353,27 @@ async function handleCloudLoad() {
     if (!result.skipped) {
       cloudLoadedFromStorage = true
     }
-    await loadLocalProjects({ allowFallback: false })
-    await computeHomeStats()
-    await updateLastChapterTitle()
+    const hash = window.location.hash
+    if (hash.startsWith("#/project/") || hash.startsWith("#/editor")) {
+      const projectId =
+        state.selectedProjectId ?? hash.replace("#/project/", "").split("/")[0]
+      if (projectId) {
+        await loadEditorView(projectId)
+      } else {
+        await loadLocalProjects({ allowFallback: false })
+        renderCurrentUI()
+      }
+    } else if (hash.startsWith("#/projects")) {
+      await loadProjectsView()
+    } else if (hash.startsWith("#/home")) {
+      await loadHomeView()
+    } else {
+      await loadLocalProjects({ allowFallback: false })
+      await computeHomeStats()
+      await updateLastChapterTitle()
+      renderCurrentUI()
+    }
+
     state.cloudStatus = "Chargement termine."
   } else {
     state.cloudStatus = `Erreur: ${result.errorMessage}`
