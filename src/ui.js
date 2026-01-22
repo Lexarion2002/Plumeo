@@ -61,6 +61,7 @@ function renderTopBar({
   activeRoute = "home",
   lastProjectId = null,
   lastCloudSaveAt = null,
+  cloudStatus = "",
   cloudBusy = false,
   accountMenuOpen = false,
   backupStatus = "",
@@ -107,6 +108,10 @@ const popover = accountMenuOpen
         </div>
       `
     : ""
+  const cloudStatusPill = cloudStatus
+    ? `<span class="status topbar-cloud-status">${cloudStatus}</span>`
+    : ""
+
   return `
     <header class="topbar">
       <div class="topbar-inner layout-container">
@@ -118,6 +123,7 @@ const popover = accountMenuOpen
             <button data-action="nav-home" type="button" class="topbar-pill${homeActive}">Accueil</button>
             <button data-action="nav-projects" type="button" class="topbar-pill${projectsActive}">Projets</button>
           </div>
+          ${cloudStatusPill}
           <div class="topbar-backup">
             <button
               class="topbar-pill${backupActive}"
@@ -243,7 +249,7 @@ export function renderHome({
 
   return `
     <section class="page-shell home-shell">
-      ${renderTopBar({ userEmail, activeRoute: "home", lastProjectId, lastCloudSaveAt, cloudBusy, accountMenuOpen, backupStatus, backupMenuOpen })}
+      ${renderTopBar({ userEmail, activeRoute: "home", lastProjectId, lastCloudSaveAt, cloudStatus, cloudBusy, accountMenuOpen, backupStatus, backupMenuOpen })}
       <div class="page dashboard">
         <main class="home-landing layout-container">
           <section class="home-hero-split">
@@ -492,6 +498,7 @@ export function renderIdeas({
   ideasNoteExpanded = false,
   lastProjectId = null,
   lastCloudSaveAt = null,
+  cloudStatus = "",
   cloudBusy = false,
   accountMenuOpen = false,
   backupStatus = "",
@@ -510,7 +517,7 @@ export function renderIdeas({
 
   return `
     <section class="page ideas-page">
-      ${renderTopBar({ userEmail, activeRoute: "ideas", lastProjectId, lastCloudSaveAt, cloudBusy, accountMenuOpen, backupStatus, backupMenuOpen })}
+      ${renderTopBar({ userEmail, activeRoute: "ideas", lastProjectId, lastCloudSaveAt, cloudStatus, cloudBusy, accountMenuOpen, backupStatus, backupMenuOpen })}
       <main class="ideas-content layout-container">
         ${ideasContent}
       </main>
@@ -526,6 +533,7 @@ export function renderProjects({
   editingProjectId = null,
   lastProjectId = null,
   lastCloudSaveAt = null,
+  cloudStatus = "",
   cloudBusy = false,
   accountMenuOpen = false,
   backupStatus = "",
@@ -640,7 +648,7 @@ export function renderProjects({
 
   return `
     <section class="page projects-page">
-      ${renderTopBar({ userEmail, activeRoute: "projects", lastProjectId, lastCloudSaveAt, cloudBusy, accountMenuOpen, backupStatus, backupMenuOpen })}
+      ${renderTopBar({ userEmail, activeRoute: "projects", lastProjectId, lastCloudSaveAt, cloudStatus, cloudBusy, accountMenuOpen, backupStatus, backupMenuOpen })}
       <main class="projects-content layout-container">
         <header class="projects-header">
           <h2>Projets</h2>
@@ -1127,6 +1135,7 @@ export function renderApp({
   mindmapView = { offsetX: 0, offsetY: 0, scale: 1 },
   characterSections = {},
   lastCloudSaveAt = null,
+  cloudStatus = "",
   cloudBusy = false,
   accountMenuOpen = false,
   backupStatus = "",
@@ -1800,7 +1809,7 @@ export function renderApp({
 
   return `
     <section class="page-shell writing-page">
-      ${renderTopBar({ userEmail, activeRoute: "projects", lastProjectId: selectedProjectId, lastCloudSaveAt, cloudBusy, accountMenuOpen, backupStatus, backupMenuOpen })}
+      ${renderTopBar({ userEmail, activeRoute: "projects", lastProjectId: selectedProjectId, lastCloudSaveAt, cloudStatus, cloudBusy, accountMenuOpen, backupStatus, backupMenuOpen })}
       <div class="page app-shell">
         <div class="writing-layout${writingNav === "chapter" ? " with-chapter" : ""}">
         <aside class="writing-sidebar editor-sidebar">

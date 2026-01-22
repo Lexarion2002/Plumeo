@@ -198,8 +198,12 @@ async function ensureCloudBootstrap() {
   const hostname = window.location.hostname
   const forceCloudLoad =
     hostname && hostname !== "localhost" && hostname !== "127.0.0.1"
+  if (forceCloudLoad) {
+    state.cloudStatus = "Chargement cloud..."
+  }
   const result = await loadFromCloud({ applyIfNewer: !forceCloudLoad })
   if (!result.ok) {
+    state.cloudStatus = `Erreur cloud: ${result.errorMessage}`
     console.error("cloud bootstrap error", result.errorMessage)
     return
   }
@@ -210,6 +214,10 @@ async function ensureCloudBootstrap() {
 
   if (result.savedAt && Number.isFinite(result.savedAt)) {
     state.lastCloudSaveAt = result.savedAt
+  }
+
+  if (forceCloudLoad) {
+    state.cloudStatus = result.skipped ? "Cloud deja a jour." : "Cloud charge."
   }
 }
 
@@ -304,6 +312,7 @@ function renderAppUI() {
     mindmapView: state.mindmapView,
     characterSections: state.characterSections,
     lastCloudSaveAt: state.lastCloudSaveAt,
+    cloudStatus: state.cloudStatus,
     cloudBusy: state.cloudBusy,
     accountMenuOpen: state.accountMenuOpen,
     backupStatus: state.backupStatus,
@@ -348,6 +357,7 @@ function renderProjectsUI() {
     editingProjectId: state.editingProjectId,
     lastProjectId: getLastOpenedProjectId(),
     lastCloudSaveAt: state.lastCloudSaveAt,
+    cloudStatus: state.cloudStatus,
     cloudBusy: state.cloudBusy,
     accountMenuOpen: state.accountMenuOpen,
     backupStatus: state.backupStatus,
@@ -372,6 +382,7 @@ function renderIdeasUI() {
     ideasNoteExpanded: state.ideasNoteExpanded,
     lastProjectId: getLastOpenedProjectId(),
     lastCloudSaveAt: state.lastCloudSaveAt,
+    cloudStatus: state.cloudStatus,
     cloudBusy: state.cloudBusy,
     accountMenuOpen: state.accountMenuOpen,
     backupStatus: state.backupStatus,
