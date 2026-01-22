@@ -1,8 +1,9 @@
-import { Editor, Extension } from "@tiptap/core"
+import { Editor, Extension, InputRule } from "@tiptap/core"
 import StarterKit from "@tiptap/starter-kit"
 import { Highlight } from "@tiptap/extension-highlight"
 import { TextAlign } from "@tiptap/extension-text-align"
 import { TextStyle } from "@tiptap/extension-text-style"
+import { TextSelection } from "@tiptap/pm/state"
 
 let editorInstance = null
 let toolbarElement = null
@@ -75,6 +76,66 @@ const TabIndent = Extension.create({
         })
       }
     }
+  }
+})
+
+const DialogueDash = Extension.create({
+  name: "dialogueDash",
+  addGlobalAttributes() {
+    return [
+      {
+        types: ["paragraph"],
+        attributes: {
+          dialogueIndent: {
+            default: false,
+            parseHTML: (element) =>
+              element.getAttribute("data-dialogue-indent") === "true",
+            renderHTML: (attributes) => {
+              if (!attributes.dialogueIndent) {
+                return {}
+              }
+              return {
+                "data-dialogue-indent": "true",
+                class: "dialogue-indent"
+              }
+            }
+          }
+        }
+      }
+    ]
+  },
+  addInputRules() {
+    return [
+      new InputRule({
+        find: /^(\s*)--$/,
+        handler: ({ state, range, match }) => {
+          const { $from } = state.selection
+          if (!$from.parent || $from.parent.type.name !== "paragraph") {
+            return null
+          }
+          for (let depth = 0; depth <= $from.depth; depth += 1) {
+            const nodeName = $from.node(depth).type.name
+            if (nodeName === "heading" || nodeName === "codeBlock" || nodeName === "listItem") {
+              return null
+            }
+          }
+
+          const prefix = match[1] ?? ""
+          const insertText = `${prefix}\u2014 `
+          let tr = state.tr.insertText(insertText, range.from, range.to)
+
+          const paragraphPos = $from.before()
+          tr = tr.setNodeMarkup(paragraphPos, undefined, {
+            ...$from.parent.attrs,
+            dialogueIndent: true
+          })
+
+          const cursorPos = range.from + insertText.length
+          tr = tr.setSelection(TextSelection.create(tr.doc, cursorPos))
+          return tr
+        }
+      })
+    ]
   }
 })
 
@@ -358,7 +419,8 @@ export function mountWritingView({ content = "", onUpdate } = {}) {
       Highlight,
       TextStyle,
       FontSize,
-      TabIndent
+      TabIndent,
+      DialogueDash
     ],
     content: normalizeContent(content),
     onUpdate({ editor }) {

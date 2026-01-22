@@ -49,7 +49,7 @@
   --token-accent: #c1121f;
   --token-danger: #780000;
   --token-focus: #669bbc;
-  --token-highlight: #669bbc;
+  --token-highlight: #ffeb3b;
   --token-shadow-soft: #003049;
   --token-radius: 12px;
   --token-spacing: 16px;
@@ -3440,13 +3440,15 @@ body {
 .icon-highlight::after {
   content: "";
   position: absolute;
-  bottom: 6px;
-  left: 6px;
-  right: 6px;
-  height: 8px;
-  background: rgba(102, 155, 188, 0.25);
+  inset: 3px;
+  background: var(--token-highlight);
   border-radius: 4px;
   z-index: 0;
+  opacity: 0.28;
+}
+
+.icon-highlight.is-active::after {
+  opacity: 0;
 }
 
 .icon-align span {
@@ -3587,6 +3589,12 @@ body {
   font-weight: 600;
 }
 
+.editor-toolbar .toolbar-button.icon-highlight.is-active {
+  border-color: var(--token-highlight);
+  background: var(--token-highlight);
+  color: #003049;
+}
+
 .editor-toolbar .toolbar-button:disabled {
   opacity: 0.5;
   cursor: not-allowed;
@@ -3649,6 +3657,10 @@ body {
 
 .editor-canvas .ProseMirror p {
   margin: 0 0 12px;
+}
+
+.editor-canvas .ProseMirror p.dialogue-indent {
+  text-indent: 1.6em;
 }
 
 .writing-page .page {
