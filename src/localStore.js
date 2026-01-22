@@ -1,10 +1,10 @@
 import { idbDel, idbGet, idbGetAll, idbPut } from "./idb.js"
 
-function buildChapterLocal(remote, existing) {
+function buildChapterLocal(remote, existing, force = false) {
   const base = existing ?? {}
   const remoteRevision =
     remote.revision ?? remote.remote_revision ?? base.remote_revision ?? 0
-  const keepLocal = base.dirty === true || base.conflict === true
+  const keepLocal = !force && (base.dirty === true || base.conflict === true)
 
   const content = keepLocal
     ? base.content_md ?? remote.content_md ?? ""
@@ -21,12 +21,12 @@ function buildChapterLocal(remote, existing) {
     content_md: content,
     order_index: remote.order_index ?? base.order_index ?? 0,
     remote_revision: keepLocal ? base.remote_revision ?? remoteRevision : remoteRevision,
-    dirty: base.dirty ?? false,
-    conflict: base.conflict ?? false,
-    server_copy: base.server_copy ?? null,
+    dirty: force ? false : base.dirty ?? false,
+    conflict: force ? false : base.conflict ?? false,
+    server_copy: force ? null : base.server_copy ?? null,
     updated_local_at: base.updated_local_at ?? null,
     last_snapshot_at: base.last_snapshot_at ?? null,
-    pending_create: false
+    pending_create: force ? false : base.pending_create ?? false
   }
 }
 
@@ -47,10 +47,10 @@ export async function upsertProjectsLocal(projects) {
   }
 }
 
-export async function upsertChaptersLocal(chapters) {
+export async function upsertChaptersLocal(chapters, { force = false } = {}) {
   for (const chapter of chapters) {
     const existing = await idbGet("chapters", chapter.id)
-    const next = buildChapterLocal(chapter, existing)
+    const next = buildChapterLocal(chapter, existing, force)
     await idbPut("chapters", next)
   }
 }

@@ -97,7 +97,7 @@ export async function loadFromCloud({ applyIfNewer = false } = {}) {
     const mindmapEdges = Array.isArray(parsed?.mindmapEdges) ? parsed.mindmapEdges : []
 
     await upsertProjectsLocal(projects)
-    await upsertChaptersLocal(chapters)
+    await upsertChaptersLocal(chapters, { force: true })
     await Promise.all([
       ...characters.map((item) => idbPut("characters", item)),
       ...inspiration.map((item) => idbPut("inspiration", item)),
