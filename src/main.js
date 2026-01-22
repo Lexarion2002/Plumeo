@@ -142,6 +142,7 @@ let autosaveTimer = null
 let cloudAutosaveTimer = null
 let syncStarted = false
 let currentUserEmail = ""
+let cloudBootstrapDone = false
 let dragChapterId = null
 let dragOverChapterId = null
 const characterSaveTimers = new Map()
@@ -185,6 +186,28 @@ function setCloudAutosaveActive(active) {
       console.error("cloud autosave error", result.errorMessage)
     }
   }, CLOUD_AUTOSAVE_INTERVAL_MS)
+}
+
+async function ensureCloudBootstrap() {
+  if (cloudBootstrapDone || !currentUserEmail) {
+    return
+  }
+
+  cloudBootstrapDone = true
+  const localProjects = await getLocalProjects()
+  if (localProjects.length > 0) {
+    return
+  }
+
+  const result = await loadFromCloud()
+  if (!result.ok) {
+    console.error("cloud bootstrap error", result.errorMessage)
+    return
+  }
+
+  if (result.savedAt && Number.isFinite(result.savedAt)) {
+    state.lastCloudSaveAt = result.savedAt
+  }
 }
 
 function setMessage(text) {
@@ -3347,6 +3370,7 @@ async function render() {
     state.backupMenuOpen = false
     currentUserEmail = props.userEmail
     setCloudAutosaveActive(Boolean(currentUserEmail))
+    await ensureCloudBootstrap()
     if (!syncStarted) {
       startSyncLoop(handleSyncResults)
       syncStarted = true
@@ -3366,6 +3390,7 @@ async function render() {
     state.backupMenuOpen = false
     currentUserEmail = props.userEmail
     setCloudAutosaveActive(Boolean(currentUserEmail))
+    await ensureCloudBootstrap()
     await loadHomeView()
     return
   }
@@ -3375,12 +3400,14 @@ async function render() {
     state.backupMenuOpen = false
     currentUserEmail = props.userEmail
     setCloudAutosaveActive(Boolean(currentUserEmail))
+    await ensureCloudBootstrap()
     await loadProjectsView()
     return
   }
 
   app.innerHTML = renderLogin({ message: props.message })
   setCloudAutosaveActive(false)
+  cloudBootstrapDone = false
 
   const signInButton = document.querySelector("#sign-in")
   const signUpButton = document.querySelector("#sign-up")

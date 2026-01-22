@@ -1,7 +1,7 @@
 import { supabase } from "./supabaseClient.js"
 import { getUserId } from "./api.js"
-import { idbGetAll } from "./idb.js"
-import { upsertChaptersLocal, upsertProjectsLocal } from "./localStore.js"
+import { idbGetAll, idbPut } from "./idb.js"
+import { setLastCloudSaveAt, upsertChaptersLocal, upsertProjectsLocal } from "./localStore.js"
 
 const CLOUD_BUCKET = "Bucketplumeo"
 const CLOUD_FILENAME = "latest.json"
@@ -19,11 +19,21 @@ export async function saveToCloud() {
   try {
     const projects = await idbGetAll("projects")
     const chapters = await idbGetAll("chapters")
+    const characters = await idbGetAll("characters")
+    const inspiration = await idbGetAll("inspiration")
+    const ideas = await idbGetAll("ideas")
+    const mindmapNodes = await idbGetAll("mindmap_nodes")
+    const mindmapEdges = await idbGetAll("mindmap_edges")
     const payload = {
       schema: 1,
       saved_at: new Date().toISOString(),
       projects,
-      chapters
+      chapters,
+      characters,
+      inspiration,
+      ideas,
+      mindmapNodes,
+      mindmapEdges
     }
     const blob = new Blob([JSON.stringify(payload)], { type: "application/json" })
     const path = buildCloudPath(userResult.userId)
@@ -36,7 +46,7 @@ export async function saveToCloud() {
       return { ok: false, errorMessage: error.message }
     }
 
-    return { ok: true }
+    return { ok: true, savedAt: payload.saved_at }
   } catch (error) {
     return { ok: false, errorMessage: error.message }
   }
@@ -60,13 +70,31 @@ export async function loadFromCloud() {
 
     const text = await data.text()
     const parsed = JSON.parse(text)
+    const savedAtRaw = parsed?.saved_at
+    const savedAt = savedAtRaw ? Date.parse(savedAtRaw) : null
     const projects = Array.isArray(parsed?.projects) ? parsed.projects : []
     const chapters = Array.isArray(parsed?.chapters) ? parsed.chapters : []
+    const characters = Array.isArray(parsed?.characters) ? parsed.characters : []
+    const inspiration = Array.isArray(parsed?.inspiration) ? parsed.inspiration : []
+    const ideas = Array.isArray(parsed?.ideas) ? parsed.ideas : []
+    const mindmapNodes = Array.isArray(parsed?.mindmapNodes) ? parsed.mindmapNodes : []
+    const mindmapEdges = Array.isArray(parsed?.mindmapEdges) ? parsed.mindmapEdges : []
 
     await upsertProjectsLocal(projects)
     await upsertChaptersLocal(chapters)
+    await Promise.all([
+      ...characters.map((item) => idbPut("characters", item)),
+      ...inspiration.map((item) => idbPut("inspiration", item)),
+      ...ideas.map((item) => idbPut("ideas", item)),
+      ...mindmapNodes.map((item) => idbPut("mindmap_nodes", item)),
+      ...mindmapEdges.map((item) => idbPut("mindmap_edges", item))
+    ])
 
-    return { ok: true }
+    if (savedAt && Number.isFinite(savedAt)) {
+      setLastCloudSaveAt(savedAt)
+    }
+
+    return { ok: true, savedAt }
   } catch (error) {
     return { ok: false, errorMessage: error.message }
   }

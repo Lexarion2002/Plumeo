@@ -2234,9 +2234,9 @@ body {
   top: var(--character-detail-y);
   width: var(--character-detail-width);
   box-sizing: border-box;
-  max-height: none;
-  overflow: visible;
-  overscroll-behavior: auto;
+  max-height: calc(100vh - 180px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
   border: 1px solid #003049;
   border-radius: var(--radius-card);
   background: var(--bg);
