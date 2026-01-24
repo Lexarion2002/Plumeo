@@ -186,10 +186,33 @@ export function renderHome({
     pagesPerDay: null,
     timeSpent: null,
     timePerDay: null,
-    favoriteTime: null
+    favoriteTime: null,
+    favoriteTimeStatus: null
   }
   const withDash = (value, formatter) =>
     value === null || value === undefined ? "--" : formatter(value)
+  const formatMinutes = (value) => {
+    if (!Number.isFinite(value)) {
+      return ""
+    }
+    const minutes = Math.round(value)
+    if (minutes < 60) {
+      return `${minutes} min`
+    }
+    const hours = Math.floor(minutes / 60)
+    const remaining = minutes % 60
+    return remaining ? `${hours} h ${remaining} min` : `${hours} h`
+  }
+  const timeUnavailableLabel = "Non disponible"
+  const hasTimeSpent = Number.isFinite(stats.timeSpent)
+  const hasTimePerDay = Number.isFinite(stats.timePerDay)
+  const timeSpentLabel = hasTimeSpent
+    ? formatMinutes(stats.timeSpent)
+    : timeUnavailableLabel
+  const timePerDayLabel = hasTimePerDay
+    ? formatMinutes(stats.timePerDay)
+    : timeUnavailableLabel
+  const timePerDaySuffix = hasTimePerDay ? " / jour" : ""
   const wordsTotalLabel = withDash(stats.totalWords, (value) => `${value} mots`)
   const wordsPerDayLabel = withDash(
     stats.wordsPerDay,
@@ -200,6 +223,23 @@ export function renderHome({
     stats.pagesPerDay,
     (value) => `${value.toFixed(1)} pages`
   )
+  const favoriteStatus = stats.favoriteTimeStatus ??
+    (stats.favoriteTime ? "ok" : "unavailable")
+  const favoriteLabel =
+    favoriteStatus === "ok"
+      ? stats.favoriteTime
+      : favoriteStatus === "insufficient"
+        ? "Non determine"
+        : "Non disponible"
+  const favoriteVisualLabel =
+    favoriteStatus === "ok"
+      ? stats.favoriteTime
+      : favoriteStatus === "insufficient"
+        ? "Donnees insuffisantes"
+        : "Aucune donnee pour le moment"
+  const favoriteNote = favoriteStatus === "unavailable"
+    ? "<span class=\"home-analysis-insight-note\">Mesure via vos sessions de focus.</span>"
+    : ""
 
   const projectCards = projects
     .map((project) => {
@@ -287,8 +327,8 @@ export function renderHome({
                     <div class="home-analysis-kpis">
                       <div class="home-analysis-kpi">
                         <span class="home-analysis-kpi-label">Temps pass&eacute; &agrave; &eacute;crire</span>
-                        <span class="home-analysis-kpi-value">${stats.timeSpent ?? "--"}</span>
-                        <span class="home-analysis-kpi-meta">${stats.timePerDay ?? "--"} / jour</span>
+                        <span class="home-analysis-kpi-value">${timeSpentLabel}</span>
+                        <span class="home-analysis-kpi-meta">${timePerDayLabel}${timePerDaySuffix}</span>
                       </div>
                       <div class="home-analysis-kpi">
                         <span class="home-analysis-kpi-label">Nombre total de mots</span>
@@ -304,8 +344,10 @@ export function renderHome({
                   </section>
                   <section class="home-analysis-card home-analysis-insight">
                     <h3>Moment pr&eacute;f&eacute;r&eacute; pour &eacute;crire</h3>
-                    <div class="home-analysis-insight-visual"></div>
-                    <p class="home-analysis-insight-text">Moment pr&eacute;f&eacute;r&eacute; pour &eacute;crire : ${stats.favoriteTime ?? "--"}</p>
+                    <div class="home-analysis-insight-visual">
+                      <span class="${favoriteStatus === "ok" ? "home-analysis-insight-label" : "home-analysis-insight-empty"}">${favoriteVisualLabel}</span>
+                    </div>
+                    <p class="home-analysis-insight-text">Moment pr&eacute;f&eacute;r&eacute; pour &eacute;crire : ${favoriteLabel}${favoriteNote}</p>
                   </section>
                 </div>
               </div>

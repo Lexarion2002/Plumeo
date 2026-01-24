@@ -187,6 +187,37 @@ export async function createLocalChapter(projectId, title, orderIndex) {
   return chapter
 }
 
+function buildWritingSessionId() {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID()
+  }
+  return `${Date.now()}-${Math.random().toString(16).slice(2)}`
+}
+
+export async function createWritingSession(payload) {
+  const now = Date.now()
+  const startedAt = Number.isFinite(payload?.started_at) ? payload.started_at : now
+  const endedAt = Number.isFinite(payload?.ended_at) ? payload.ended_at : startedAt
+  const durationMs = Number.isFinite(payload?.duration_ms)
+    ? payload.duration_ms
+    : Math.max(0, endedAt - startedAt)
+  const session = {
+    id: buildWritingSessionId(),
+    project_id: payload?.project_id ?? null,
+    chapter_id: payload?.chapter_id ?? null,
+    started_at: startedAt,
+    ended_at: endedAt,
+    duration_ms: durationMs,
+    created_at: now
+  }
+  await idbPut("writing_sessions", session)
+  return session
+}
+
+export async function listWritingSessions() {
+  return idbGetAll("writing_sessions")
+}
+
 
 export async function getLocalCharacters(projectId) {
   const all = await idbGetAll("characters")

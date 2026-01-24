@@ -34,6 +34,8 @@ import {
   upsertChaptersLocal,
   updateLocalProject,
   createLocalChapter,
+  createWritingSession,
+  listWritingSessions,
   getLocalCharacters,
   createLocalCharacter,
   updateLocalCharacter,
@@ -137,9 +139,12 @@ const state = {
 
 const SNAPSHOT_INTERVAL_MS = 5 * 60 * 1000
 const CLOUD_AUTOSAVE_INTERVAL_MS = 5 * 60 * 1000
+const WRITING_SESSION_IDLE_MS = 2 * 60 * 1000
 
 let autosaveTimer = null
 let cloudAutosaveTimer = null
+let writingSessionIdleTimer = null
+let activeWritingSession = null
 let syncStarted = false
 let currentUserEmail = ""
 let cloudBootstrapDone = false
@@ -669,12 +674,151 @@ function toPlainText(value) {
   return container.textContent ?? ""
 }
 
+function resolveSessionRange(session) {
+  const start = Number.isFinite(session?.started_at) ? session.started_at : null
+  if (start === null) {
+    return null
+  }
+  const endedAt = Number.isFinite(session?.ended_at) ? session.ended_at : null
+  const durationMs = Number.isFinite(session?.duration_ms)
+    ? session.duration_ms
+    : null
+  const end = Number.isFinite(endedAt)
+    ? endedAt
+    : Number.isFinite(durationMs)
+      ? start + durationMs
+      : null
+  if (!Number.isFinite(end) || end <= start) {
+    return null
+  }
+  const duration = Number.isFinite(durationMs) && durationMs > 0 ? durationMs : end - start
+  if (duration <= 0) {
+    return null
+  }
+  return { start, end, duration }
+}
+
+function computeTimeStats(sessions, now) {
+  if (!Array.isArray(sessions)) {
+    return { timeSpent: null, timePerDay: null }
+  }
+
+  if (sessions.length === 0) {
+    return { timeSpent: 0, timePerDay: 0 }
+  }
+
+  let totalMs = 0
+  let earliest = null
+
+  for (const session of sessions) {
+    const range = resolveSessionRange(session)
+    if (!range) {
+      continue
+    }
+    totalMs += range.duration
+    earliest = earliest === null ? range.start : Math.min(earliest, range.start)
+  }
+
+  if (totalMs <= 0 || earliest === null) {
+    return { timeSpent: 0, timePerDay: 0 }
+  }
+
+  const totalMinutes = totalMs / 60000
+  const days = Math.max(1, Math.ceil((now - earliest) / 86400000))
+  return { timeSpent: totalMinutes, timePerDay: totalMinutes / days }
+}
+
+const FAVORITE_TIME_BUCKETS = [
+  { id: "night", label: "Nuit (0h-6h)", startHour: 0, endHour: 6 },
+  { id: "morning", label: "Matin (6h-12h)", startHour: 6, endHour: 12 },
+  { id: "afternoon", label: "Apres-midi (12h-18h)", startHour: 12, endHour: 18 },
+  { id: "evening", label: "Soir (18h-24h)", startHour: 18, endHour: 24 }
+]
+const FAVORITE_TIME_MINUTES = 30
+const FAVORITE_TIME_TIE_WINDOW_MS = 60000
+
+function getFavoriteBucketByHour(hour) {
+  if (hour < 6) {
+    return FAVORITE_TIME_BUCKETS[0]
+  }
+  if (hour < 12) {
+    return FAVORITE_TIME_BUCKETS[1]
+  }
+  if (hour < 18) {
+    return FAVORITE_TIME_BUCKETS[2]
+  }
+  return FAVORITE_TIME_BUCKETS[3]
+}
+
+function computeFavoriteWritingMoment(sessions) {
+  if (!Array.isArray(sessions) || sessions.length === 0) {
+    return { status: "unavailable", label: null }
+  }
+
+  const totals = FAVORITE_TIME_BUCKETS.reduce((acc, bucket) => {
+    acc[bucket.id] = 0
+    return acc
+  }, {})
+
+  let totalMs = 0
+
+  for (const session of sessions) {
+    const range = resolveSessionRange(session)
+    if (!range) {
+      continue
+    }
+
+    let cursor = range.start
+    while (cursor < range.end) {
+      const sliceDate = new Date(cursor)
+      const bucket = getFavoriteBucketByHour(sliceDate.getHours())
+      const bucketEnd = new Date(sliceDate)
+      bucketEnd.setMinutes(0, 0, 0)
+      bucketEnd.setHours(bucket.endHour, 0, 0, 0)
+      const sliceEnd = Math.min(range.end, bucketEnd.getTime())
+      const duration = sliceEnd - cursor
+      if (duration > 0) {
+        totals[bucket.id] += duration
+        totalMs += duration
+      }
+      cursor = sliceEnd
+    }
+  }
+
+  if (totalMs <= 0) {
+    return { status: "unavailable", label: null }
+  }
+
+  if (totalMs < FAVORITE_TIME_MINUTES * 60000) {
+    return { status: "insufficient", label: null }
+  }
+
+  const maxValue = Math.max(...FAVORITE_TIME_BUCKETS.map((bucket) => totals[bucket.id]))
+  if (maxValue <= 0) {
+    return { status: "unavailable", label: null }
+  }
+
+  const winners = FAVORITE_TIME_BUCKETS.filter(
+    (bucket) => Math.abs(totals[bucket.id] - maxValue) <= FAVORITE_TIME_TIE_WINDOW_MS
+  )
+  if (winners.length !== 1) {
+    return { status: "insufficient", label: null }
+  }
+
+  return { status: "ok", label: winners[0].label }
+}
+
 async function computeHomeStats() {
-  const chapters = await idbGetAll("chapters")
+  const [chapters, sessions] = await Promise.all([
+    idbGetAll("chapters"),
+    listWritingSessions().catch(() => null)
+  ])
   const now = Date.now()
   let totalWords = 0
   let earliest = null
   let hasAnyChapter = chapters.length > 0
+  const timeStats = computeTimeStats(sessions, now)
+  const favoriteMoment = computeFavoriteWritingMoment(sessions)
 
   for (const chapter of chapters) {
     const plain = toPlainText(chapter.content_md ?? "")
@@ -698,9 +842,10 @@ async function computeHomeStats() {
       wordsPerDay: null,
       pagesTotal: null,
       pagesPerDay: null,
-      timeSpent: null,
-      timePerDay: null,
-      favoriteTime: null
+      timeSpent: timeStats.timeSpent,
+      timePerDay: timeStats.timePerDay,
+      favoriteTime: favoriteMoment.label,
+      favoriteTimeStatus: favoriteMoment.status
     }
     return
   }
@@ -716,10 +861,84 @@ async function computeHomeStats() {
     wordsPerDay,
     pagesTotal,
     pagesPerDay,
-    // TODO: Track writing sessions to compute time spent and favorite time.
-    timeSpent: null,
-    timePerDay: null,
-    favoriteTime: null
+    timeSpent: timeStats.timeSpent,
+    timePerDay: timeStats.timePerDay,
+    favoriteTime: favoriteMoment.label,
+    favoriteTimeStatus: favoriteMoment.status
+  }
+}
+
+function canTrackWritingSession() {
+  return Boolean(state.selectedChapterId && state.writingNav === "chapter")
+}
+
+function scheduleWritingSessionIdle() {
+  if (writingSessionIdleTimer) {
+    clearTimeout(writingSessionIdleTimer)
+  }
+  writingSessionIdleTimer = window.setTimeout(() => {
+    void finalizeWritingSession("idle")
+  }, WRITING_SESSION_IDLE_MS)
+}
+
+function touchWritingSession() {
+  if (!canTrackWritingSession()) {
+    return
+  }
+
+  const now = Date.now()
+  if (!activeWritingSession) {
+    activeWritingSession = {
+      projectId: state.selectedProjectId ?? null,
+      chapterId: state.selectedChapterId ?? null,
+      startedAt: now,
+      lastActivityAt: now
+    }
+  } else if (activeWritingSession.chapterId !== state.selectedChapterId) {
+    void finalizeWritingSession("chapter-switch")
+    activeWritingSession = {
+      projectId: state.selectedProjectId ?? null,
+      chapterId: state.selectedChapterId ?? null,
+      startedAt: now,
+      lastActivityAt: now
+    }
+  } else {
+    activeWritingSession.lastActivityAt = now
+  }
+
+  scheduleWritingSessionIdle()
+}
+
+async function finalizeWritingSession(reason) {
+  if (!activeWritingSession) {
+    return
+  }
+
+  const session = activeWritingSession
+  activeWritingSession = null
+
+  if (writingSessionIdleTimer) {
+    clearTimeout(writingSessionIdleTimer)
+    writingSessionIdleTimer = null
+  }
+
+  const endedAt = session.lastActivityAt ?? Date.now()
+  if (!Number.isFinite(session.startedAt) || endedAt <= session.startedAt) {
+    return
+  }
+
+  const durationMs = endedAt - session.startedAt
+  try {
+    await createWritingSession({
+      project_id: session.projectId,
+      chapter_id: session.chapterId,
+      started_at: session.startedAt,
+      ended_at: endedAt,
+      duration_ms: durationMs
+    })
+    await computeHomeStats()
+  } catch (error) {
+    console.error("writing session save error", reason, error)
   }
 }
 
@@ -1392,6 +1611,7 @@ async function handleBackupExport() {
   const ideas = await idbGetAll("ideas")
   const mindmapNodes = await idbGetAll("mindmap_nodes")
   const mindmapEdges = await idbGetAll("mindmap_edges")
+  const writingSessions = await idbGetAll("writing_sessions")
   const payload = {
     version: 1,
     exportedAt: new Date().toISOString(),
@@ -1403,7 +1623,8 @@ async function handleBackupExport() {
       inspiration,
       ideas,
       mindmapNodes,
-      mindmapEdges
+      mindmapEdges,
+      writingSessions
     }
   }
 
@@ -1463,6 +1684,7 @@ async function handleBackupImport(file) {
   const ideas = Array.isArray(data.ideas) ? data.ideas : []
   const mindmapNodes = Array.isArray(data.mindmapNodes) ? data.mindmapNodes : []
   const mindmapEdges = Array.isArray(data.mindmapEdges) ? data.mindmapEdges : []
+  const writingSessions = Array.isArray(data.writingSessions) ? data.writingSessions : []
 
   if (!projects || !chapters) {
     state.backupStatus = "Import refuse (donnees)."
@@ -1489,6 +1711,7 @@ async function handleBackupImport(file) {
   await clearStore("inspiration", "id")
   await clearStore("mindmap_nodes", "id")
   await clearStore("mindmap_edges", "id")
+  await clearStore("writing_sessions", "id")
   for (const item of characters) {
     await idbPut("characters", item)
   }
@@ -1503,6 +1726,9 @@ async function handleBackupImport(file) {
   }
   for (const edge of mindmapEdges) {
     await idbPut("mindmap_edges", edge)
+  }
+  for (const session of writingSessions) {
+    await idbPut("writing_sessions", session)
   }
 
   state.backupStatus = "Import termine."
@@ -1883,6 +2109,8 @@ async function handleChapterContentUpdate(content) {
     return
   }
 
+  touchWritingSession()
+
   const updated = await saveLocalChapterDraft(state.selectedChapterId, {
     content_md: content
   })
@@ -2012,6 +2240,7 @@ async function handleChapterSelect(id) {
     return
   }
 
+  await finalizeWritingSession("chapter-select")
   clearAutosaveTimer()
   state.selectedChapterId = id
   setLastOpenedChapterId(id)
@@ -2048,6 +2277,10 @@ async function handleChapterDelete(id) {
   )
   if (!confirmed) {
     return
+  }
+
+  if (state.selectedChapterId === id) {
+    await finalizeWritingSession("chapter-delete")
   }
 
   await deleteLocalChapter(id)
@@ -3404,6 +3637,20 @@ app.addEventListener("keydown", (event) => {
 
 async function render() {
   const { page, props } = await route()
+
+  const nextWritingNav = page === "editor" ? props.writingNav ?? "chapter" : null
+  const switchingProject =
+    page === "editor" &&
+    props.projectId &&
+    state.selectedProjectId &&
+    props.projectId !== state.selectedProjectId
+  const leavingWriting =
+    page !== "editor" || nextWritingNav !== "chapter" || switchingProject
+
+  if (leavingWriting) {
+    await finalizeWritingSession("route-change")
+  }
+
   clearAutosaveTimer()
 
   if (page === "editor") {

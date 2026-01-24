@@ -29,6 +29,7 @@ export async function saveToCloud() {
     const ideas = await idbGetAll("ideas")
     const mindmapNodes = await idbGetAll("mindmap_nodes")
     const mindmapEdges = await idbGetAll("mindmap_edges")
+    const writingSessions = await idbGetAll("writing_sessions")
     const payload = {
       schema: 1,
       saved_at: new Date().toISOString(),
@@ -38,7 +39,8 @@ export async function saveToCloud() {
       inspiration,
       ideas,
       mindmapNodes,
-      mindmapEdges
+      mindmapEdges,
+      writingSessions
     }
     const blob = new Blob([JSON.stringify(payload)], { type: "application/json" })
     const path = buildCloudPath(userResult.userId)
@@ -95,6 +97,11 @@ export async function loadFromCloud({ applyIfNewer = false } = {}) {
     const ideas = Array.isArray(parsed?.ideas) ? parsed.ideas : []
     const mindmapNodes = Array.isArray(parsed?.mindmapNodes) ? parsed.mindmapNodes : []
     const mindmapEdges = Array.isArray(parsed?.mindmapEdges) ? parsed.mindmapEdges : []
+    const writingSessions = Array.isArray(parsed?.writingSessions)
+      ? parsed.writingSessions
+      : Array.isArray(parsed?.writing_sessions)
+        ? parsed.writing_sessions
+        : []
 
     await upsertProjectsLocal(projects)
     await upsertChaptersLocal(chapters, { force: true })
@@ -103,7 +110,8 @@ export async function loadFromCloud({ applyIfNewer = false } = {}) {
       ...inspiration.map((item) => idbPut("inspiration", item)),
       ...ideas.map((item) => idbPut("ideas", item)),
       ...mindmapNodes.map((item) => idbPut("mindmap_nodes", item)),
-      ...mindmapEdges.map((item) => idbPut("mindmap_edges", item))
+      ...mindmapEdges.map((item) => idbPut("mindmap_edges", item)),
+      ...writingSessions.map((item) => idbPut("writing_sessions", item))
     ])
 
     if (savedAt && Number.isFinite(savedAt)) {
