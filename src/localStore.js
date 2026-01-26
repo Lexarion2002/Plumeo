@@ -138,6 +138,33 @@ export async function deleteLocalProjectMindmap(projectId) {
   }
 }
 
+export async function deleteLocalProjectKnowledge(projectId) {
+  if (!projectId) {
+    return
+  }
+  const notes = await idbGetAll("knowledge_notes")
+  const links = await idbGetAll("knowledge_links")
+  const targetNotes = notes.filter((note) => note.project_id === projectId)
+  const targetLinks = links.filter((link) => link.project_id === projectId)
+  for (const note of targetNotes) {
+    await idbDel("knowledge_notes", note.id)
+  }
+  for (const link of targetLinks) {
+    await idbDel("knowledge_links", link.id)
+  }
+}
+
+export async function deleteLocalProjectFocus(projectId) {
+  if (!projectId) {
+    return
+  }
+  const sessions = await idbGetAll("focus_sessions")
+  const targets = sessions.filter((session) => session.project_id === projectId)
+  for (const session of targets) {
+    await idbDel("focus_sessions", session.id)
+  }
+}
+
 export async function saveLocalChapterDraft(id, patch) {
   const current = await idbGet("chapters", id)
   const next = {
@@ -436,6 +463,146 @@ export async function createMindmapEdge(projectId, payload) {
   }
   await idbPut("mindmap_edges", edge)
   return edge
+}
+
+function buildKnowledgeNoteId() {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID()
+  }
+  return `${Date.now()}-${Math.random().toString(16).slice(2)}`
+}
+
+function buildFocusSessionId() {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID()
+  }
+  return `${Date.now()}-${Math.random().toString(16).slice(2)}`
+}
+
+export async function listFocusSessions(projectId) {
+  const all = await idbGetAll("focus_sessions")
+  const filtered = projectId
+    ? all.filter((session) => session.project_id === projectId)
+    : all
+  return filtered.sort((a, b) => (b.start_at ?? 0) - (a.start_at ?? 0))
+}
+
+export async function createFocusSession(projectId, chapterId, payload = {}) {
+  if (!projectId || !chapterId) {
+    return null
+  }
+  const now = Date.now()
+  const session = {
+    id: buildFocusSessionId(),
+    project_id: projectId,
+    chapter_id: chapterId,
+    start_at: payload.start_at ?? now,
+    end_at: payload.end_at ?? null,
+    duration_ms: payload.duration_ms ?? null,
+    word_count_start: payload.word_count_start ?? 0,
+    word_count_end: payload.word_count_end ?? null
+  }
+  await idbPut("focus_sessions", session)
+  return session
+}
+
+export async function updateFocusSession(id, patch = {}) {
+  if (!id) {
+    return null
+  }
+  const current = await idbGet("focus_sessions", id)
+  if (!current) {
+    return null
+  }
+  const next = {
+    ...current,
+    ...patch
+  }
+  await idbPut("focus_sessions", next)
+  return next
+}
+
+export async function listKnowledgeNotes(projectId) {
+  const all = await idbGetAll("knowledge_notes")
+  return all
+    .filter((note) => note.project_id === projectId)
+    .sort((a, b) => (b.updated_at ?? 0) - (a.updated_at ?? 0))
+}
+
+export async function getKnowledgeNote(id) {
+  return idbGet("knowledge_notes", id)
+}
+
+export async function createKnowledgeNote(projectId, title) {
+  if (!projectId) {
+    return null
+  }
+  const now = Date.now()
+  const note = {
+    id: buildKnowledgeNoteId(),
+    project_id: projectId,
+    title: title ?? "Nouvelle note",
+    content: "",
+    created_at: now,
+    updated_at: now
+  }
+  await idbPut("knowledge_notes", note)
+  return note
+}
+
+export async function updateKnowledgeNote(id, patch) {
+  const current = await idbGet("knowledge_notes", id)
+  if (!current) {
+    return null
+  }
+  const next = {
+    ...current,
+    ...patch,
+    updated_at: Date.now()
+  }
+  await idbPut("knowledge_notes", next)
+  return next
+}
+
+export async function deleteKnowledgeNote(id) {
+  if (!id) {
+    return
+  }
+  await idbDel("knowledge_notes", id)
+  const links = await idbGetAll("knowledge_links")
+  const linked = links.filter((link) => link.from_note_id === id)
+  for (const link of linked) {
+    await idbDel("knowledge_links", link.id)
+  }
+}
+
+export async function listKnowledgeLinks(projectId) {
+  const all = await idbGetAll("knowledge_links")
+  return all.filter((link) => link.project_id === projectId)
+}
+
+export async function replaceKnowledgeLinksForNote(noteId, projectId, titles) {
+  if (!noteId) {
+    return
+  }
+  const all = await idbGetAll("knowledge_links")
+  const existing = all.filter((link) => link.from_note_id === noteId)
+  for (const link of existing) {
+    await idbDel("knowledge_links", link.id)
+  }
+  if (!Array.isArray(titles) || !titles.length) {
+    return
+  }
+  const uniqueTitles = Array.from(new Set(titles)).filter(Boolean)
+  for (const title of uniqueTitles) {
+    const link = {
+      id: `${noteId}:${title}`,
+      project_id: projectId,
+      from_note_id: noteId,
+      to_title: title
+    }
+    await idbPut("knowledge_links", link)
+  }
 }
 
 export async function listIdeas({ projectId = null } = {}) {

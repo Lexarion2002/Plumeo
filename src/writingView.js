@@ -3,7 +3,8 @@ import StarterKit from "@tiptap/starter-kit"
 import { Highlight } from "@tiptap/extension-highlight"
 import { TextAlign } from "@tiptap/extension-text-align"
 import { TextStyle } from "@tiptap/extension-text-style"
-import { TextSelection } from "@tiptap/pm/state"
+import { Plugin, TextSelection } from "@tiptap/pm/state"
+import { Decoration, DecorationSet } from "@tiptap/pm/view"
 
 let editorInstance = null
 let toolbarElement = null
@@ -139,6 +140,91 @@ const DialogueDash = Extension.create({
   }
 })
 
+function buildWikiLinkDecorations(doc) {
+  const decorations = []
+  const regex = /\[\[([^\]]+)\]\]/g
+
+  doc.descendants((node, pos, parent) => {
+    if (!node.isText || !node.text) {
+      return
+    }
+    if (parent?.type?.name === "codeBlock") {
+      return
+    }
+    if (node.marks?.some((mark) => mark.type.name === "code")) {
+      return
+    }
+    regex.lastIndex = 0
+    let match
+    while ((match = regex.exec(node.text)) !== null) {
+      const raw = match[1] ?? ""
+      const pipeIndex = raw.indexOf("|")
+      const titleRaw = pipeIndex === -1 ? raw : raw.slice(0, pipeIndex)
+      const title = titleRaw.trim()
+      if (!title) {
+        continue
+      }
+      const from = pos + match.index
+      const to = from + match[0].length
+      decorations.push(
+        Decoration.inline(from, to, {
+          class: "editor-wiki-link",
+          "data-wiki-title": encodeURIComponent(title)
+        })
+      )
+    }
+  })
+
+  if (!decorations.length) {
+    return DecorationSet.empty
+  }
+  return DecorationSet.create(doc, decorations)
+}
+
+const WikiLink = Extension.create({
+  name: "wikiLink",
+  addOptions() {
+    return {
+      onOpen: null
+    }
+  },
+  addProseMirrorPlugins() {
+    const onOpen = this.options.onOpen
+    const plugin = new Plugin({
+      state: {
+        init: (_, { doc }) => buildWikiLinkDecorations(doc),
+        apply: (tr, old) => (tr.docChanged ? buildWikiLinkDecorations(tr.doc) : old)
+      },
+      props: {
+        decorations(state) {
+          return plugin.getState(state)
+        },
+        handleClick(_view, _pos, event) {
+          if (event.button !== 0) {
+            return false
+          }
+          const target = event.target instanceof HTMLElement ? event.target : null
+          const link = target?.closest(".editor-wiki-link")
+          if (!link) {
+            return false
+          }
+          const rawTitle = link.dataset.wikiTitle || ""
+          const title = rawTitle ? decodeURIComponent(rawTitle) : ""
+          if (!title) {
+            return false
+          }
+          if (typeof onOpen === "function") {
+            onOpen(title)
+          }
+          event.preventDefault()
+          return true
+        }
+      }
+    })
+    return [plugin]
+  }
+})
+
 function countWords(text) {
   const trimmed = text.trim()
   if (!trimmed) {
@@ -158,6 +244,13 @@ function updateWordCount() {
   }
   const words = countWords(editorInstance.state.doc.textContent ?? "")
   label.textContent = `${words} mot${words === 1 ? "" : "s"}`
+}
+
+export function getEditorWordCount() {
+  if (!editorInstance) {
+    return null
+  }
+  return countWords(editorInstance.state.doc.textContent ?? "")
 }
 
 function escapeHtml(value) {
@@ -387,7 +480,7 @@ function schedulePaperMetrics() {
   })
 }
 
-export function mountWritingView({ content = "", onUpdate } = {}) {
+export function mountWritingView({ content = "", onUpdate, onWikiLinkClick } = {}) {
   const editorElement = document.querySelector("#chapter-editor")
   const toolbar = document.querySelector("#editor-toolbar")
   const paperShell = document.querySelector(".paper-shell")
@@ -411,17 +504,23 @@ export function mountWritingView({ content = "", onUpdate } = {}) {
   window.addEventListener("resize", resizeHandler)
   schedulePaperMetrics()
 
+  const extensions = [
+    StarterKit.configure({ gapcursor: false }),
+    TextAlign.configure({ types: ["paragraph", "heading"] }),
+    Highlight,
+    TextStyle,
+    FontSize,
+    TabIndent,
+    DialogueDash
+  ]
+
+  if (typeof onWikiLinkClick === "function") {
+    extensions.push(WikiLink.configure({ onOpen: onWikiLinkClick }))
+  }
+
   editorInstance = new Editor({
     element: editorElement,
-    extensions: [
-      StarterKit.configure({ gapcursor: false }),
-      TextAlign.configure({ types: ["paragraph", "heading"] }),
-      Highlight,
-      TextStyle,
-      FontSize,
-      TabIndent,
-      DialogueDash
-    ],
+    extensions,
     content: normalizeContent(content),
     onUpdate({ editor }) {
       if (onUpdate) {

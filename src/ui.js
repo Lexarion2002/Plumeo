@@ -56,6 +56,15 @@ function formatIdeaMetaDate(value) {
   return `${dayLabel} ${timeLabel}`
 }
 
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;")
+}
+
 function renderTopBar({
   userEmail = "",
   activeRoute = "home",
@@ -920,6 +929,25 @@ function renderInspirationPanel({
   `
 }
 
+function getRectEdgeIntersection(rect, fromPoint, toPoint) {
+  const cx = rect.x + rect.width / 2
+  const cy = rect.y + rect.height / 2
+  const dx = toPoint.x - fromPoint.x
+  const dy = toPoint.y - fromPoint.y
+  if (dx === 0 && dy === 0) {
+    return { x: cx, y: cy }
+  }
+  const halfW = rect.width / 2
+  const halfH = rect.height / 2
+  const scale = Math.min(
+    halfW / Math.max(Math.abs(dx), 1e-6),
+    halfH / Math.max(Math.abs(dy), 1e-6)
+  )
+  return {
+    x: cx + dx * scale,
+    y: cy + dy * scale
+  }
+}
 
 function renderMindmapPanel({
   projectTitle = "-",
@@ -932,6 +960,8 @@ function renderMindmapPanel({
   createType = "note",
   linkTypeMenu = null,
   flashNodeId = null,
+  mindmapDeleteConfirmId = null,
+  mindmapContextMenu = null,
   view = { offsetX: 0, offsetY: 0, scale: 1 },
   chapters = [],
   characters = []
@@ -957,10 +987,10 @@ function renderMindmapPanel({
   const visibleIds = new Set(visibleNodes.map((node) => node.id))
 
   const edgeLabels = {
-    linked: "lie a",
+    linked: "li&eacute; &agrave;",
     conflict: "conflit",
-    appears: "apparait dans",
-    cause: "cause-consequence"
+    appears: "appara&icirc;t dans",
+    cause: "cause-cons&eacute;quence"
   }
 
   const edgesMarkup = edges
@@ -971,16 +1001,28 @@ function renderMindmapPanel({
       if (!fromNode || !toNode) {
         return ""
       }
-      const x1 = fromNode.x + nodeWidth / 2
-      const y1 = fromNode.y + nodeHeight / 2
-      const x2 = toNode.x + nodeWidth / 2
-      const y2 = toNode.y + nodeHeight / 2
+      const fromRect = { x: fromNode.x, y: fromNode.y, width: nodeWidth, height: nodeHeight }
+      const toRect = { x: toNode.x, y: toNode.y, width: nodeWidth, height: nodeHeight }
+      const fromCenter = { x: fromRect.x + fromRect.width / 2, y: fromRect.y + fromRect.height / 2 }
+      const toCenter = { x: toRect.x + toRect.width / 2, y: toRect.y + toRect.height / 2 }
+      const start = getRectEdgeIntersection(fromRect, fromCenter, toCenter)
+      const end = getRectEdgeIntersection(toRect, toCenter, fromCenter)
+      const x1 = start.x
+      const y1 = start.y
+      const x2 = end.x
+      const y2 = end.y
       const label = edgeLabels[edge.type] ?? edge.type ?? ""
       const mx = (x1 + x2) / 2
       const my = (y1 + y2) / 2
+      const nx = y1 - y2
+      const ny = x2 - x1
+      const nLen = Math.hypot(nx, ny) || 1
+      const offset = 8
+      const lx = mx + (nx / nLen) * offset
+      const ly = my + (ny / nLen) * offset
       return `
         <line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" />
-        ${label ? `<text x="${mx}" y="${my}" class="mindmap-edge-label">${label}</text>` : ""}
+        ${label ? `<text x="${lx}" y="${ly}" class="mindmap-edge-label">${label}</text>` : ""}
       `
     })
     .join("")
@@ -989,9 +1031,9 @@ function renderMindmapPanel({
     chapter: "Chapitre",
     character: "Personnage",
     place: "Lieu",
-    theme: "Theme",
-    event: "Evenement",
-    note: "Idee"
+    theme: "Th&egrave;me",
+    event: "&Eacute;v&eacute;nement",
+    note: "Id&eacute;e"
   }
 
   const nodesMarkup = visibleNodes
@@ -999,7 +1041,7 @@ function renderMindmapPanel({
       const isActive = node.id === selectedNodeId
       const isSource = node.id === linkSourceId
       const isFlash = node.id === flashNodeId
-      const typeLabel = typeLabels[node.type] ?? "Idee"
+      const typeLabel = typeLabels[node.type] ?? "Id&eacute;e"
       return `
         <button
           type="button"
@@ -1037,21 +1079,23 @@ function renderMindmapPanel({
     ? `
       <aside class="mindmap-sidebar">
         <header class="mindmap-sidebar-header">
-          <h3>${selectedNode.title}</h3>
-          <button type="button" class="btn btn-ghost danger-hover" data-action="mindmap-delete-node" data-id="${selectedNode.id}">Supprimer</button>
+          <h3>N&oelig;ud : ${selectedNode.title || "Sans titre"}</h3>
         </header>
         <div class="mindmap-sidebar-body">
           <label class="field"><span>Titre</span>
             <input class="input" type="text" value="${selectedNode.title}" data-mindmap-field="title" data-id="${selectedNode.id}" />
           </label>
-          <label class="field"><span>Type</span>
+          <label class="field"><span>Type du n&oelig;ud</span>
             <select class="input" data-mindmap-field="type" data-id="${selectedNode.id}">
               ${["chapter", "character", "place", "theme", "event", "note"]
-                .map((value) => `<option value="${value}" ${value === selectedNode.type ? "selected" : ""}>${value}</option>`)
+                .map(
+                  (value) =>
+                    `<option value="${value}" ${value === selectedNode.type ? "selected" : ""}>${typeLabels[value]}</option>`
+                )
                 .join("")}
             </select>
           </label>
-          <label class="field"><span>Resume</span>
+          <label class="field"><span>R&eacute;sum&eacute;</span>
             <textarea class="input" rows="3" data-mindmap-field="summary" data-id="${selectedNode.id}">${selectedNode.summary ?? ""}</textarea>
           </label>
           <label class="field"><span>Tags</span>
@@ -1073,18 +1117,17 @@ function renderMindmapPanel({
             ? `<button type="button" class="btn btn-secondary" data-action="mindmap-open-source" data-id="${selectedNode.id}">Ouvrir la source</button>`
             : ""}
         </div>
+        <div class="mindmap-sidebar-actions">
+          <div class="mindmap-sidebar-divider"></div>
+          <button type="button" class="btn btn-danger" data-action="mindmap-delete-node" data-id="${selectedNode.id}">Supprimer</button>
+        </div>
       </aside>
     `
     : `
       <aside class="mindmap-sidebar">
         <div class="mindmap-empty">
-          <h3>Carte mentale</h3>
-          <ul>
-            <li>Double-clique pour creer un noeud</li>
-            <li>Glisse un noeud pour le deplacer</li>
-            <li>Relie deux noeuds pour creer un lien</li>
-          </ul>
-          <p>Utilise la carte pour voir la structure, pas pour ecrire tout le texte.</p>
+          <h3>S&eacute;lectionne un n&oelig;ud</h3>
+          <p>Choisis un n&oelig;ud pour afficher ses d&eacute;tails.</p>
         </div>
       </aside>
     `
@@ -1092,32 +1135,61 @@ function renderMindmapPanel({
   const linkMenu = linkTypeMenu?.open
     ? `
         <div class="mindmap-link-menu" style="transform: translate(${linkTypeMenu.x}px, ${linkTypeMenu.y}px);">
-          <button type="button" data-action="mindmap-link-type" data-type="linked">lie a</button>
+          <button type="button" data-action="mindmap-link-type" data-type="linked">li&eacute; &agrave;</button>
           <button type="button" data-action="mindmap-link-type" data-type="conflict">conflit</button>
-          <button type="button" data-action="mindmap-link-type" data-type="appears">apparait dans</button>
-          <button type="button" data-action="mindmap-link-type" data-type="cause">cause-consequence</button>
-          <button type="button" data-action="mindmap-link-cancel">valider</button>
+          <button type="button" data-action="mindmap-link-type" data-type="appears">appara&icirc;t dans</button>
+          <button type="button" data-action="mindmap-link-type" data-type="cause">cause-cons&eacute;quence</button>
+          <button type="button" data-action="mindmap-link-cancel">Valider</button>
         </div>
       `
     : ""
+
+  const contextMenu = mindmapContextMenu?.open
+    ? `
+        <div class="mindmap-context-menu" style="left: ${mindmapContextMenu.x}px; top: ${mindmapContextMenu.y}px;">
+          <button type="button" class="btn btn-primary" data-action="mindmap-context-add-node">+ N&oelig;ud</button>
+          <button type="button" class="btn btn-secondary" data-action="mindmap-context-link">+ Lien</button>
+        </div>
+      `
+    : ""
+
+  const deleteConfirm = selectedNodeId && mindmapDeleteConfirmId === selectedNodeId
+  const confirmTitle = selectedNode?.title || "Sans titre"
 
   return `
     <section class="panel card mindmap-panel">
       <header class="mindmap-toolbar">
         <div class="mindmap-toolbar-left">
-          <h2>Carte mentale — Projet : ${projectTitle}</h2>
-          <p class="mindmap-subtitle">Visualise la structure de ton recit</p>
+          <h2>Carte mentale &mdash; Projet : ${projectTitle}</h2>
+          <p class="mindmap-subtitle">Visualise la structure de ton r&eacute;cit</p>
         </div>
-        <div class="mindmap-toolbar-actions">
-          <button type="button" class="btn btn-primary" data-action="mindmap-add-node">+ Noeud</button>
-          <select id="mindmap-create-type" class="input" data-action="mindmap-create-type">
-            ${["chapter", "character", "place", "theme", "event", "note"]
-              .map((value) => `<option value="${value}" ${value === createType ? "selected" : ""}>${typeLabels[value]}</option>`)
-              .join("")}
-          </select>
-          <button type="button" class="btn btn-secondary${mode === "link" ? " is-active" : ""}" data-action="mindmap-link-mode">+ Lien</button>
-          <input class="input" type="text" id="mindmap-search" placeholder="Rechercher..." value="${search}" />
-          <button type="button" class="btn btn-ghost" data-action="mindmap-reset" title="Centrer la carte sur l'ensemble des noeuds">Recentrer</button>
+        <div class="mm-controls">
+          <div class="mm-controls__group mm-controls__group--actions">
+            <button type="button" class="btn btn-primary" data-action="mindmap-add-node">+ N&oelig;ud</button>
+            <button type="button" class="btn btn-secondary${mode === "link" ? " is-active" : ""}" data-action="mindmap-link-mode">+ Lien</button>
+          </div>
+          <div class="mm-controls__group mm-controls__group--type">
+            <label class="mm-controls__field">
+              <span>Type du nouveau n&oelig;ud</span>
+              <select id="mindmap-create-type" class="input" data-action="mindmap-create-type">
+                ${["chapter", "character", "place", "theme", "event", "note"]
+                  .map(
+                    (value) =>
+                      `<option value="${value}" ${value === createType ? "selected" : ""}>${typeLabels[value]}</option>`
+                  )
+                  .join("")}
+              </select>
+            </label>
+          </div>
+          <div class="mm-controls__group mm-controls__group--nav">
+            <label class="mm-controls__field">
+              <span>Recherche</span>
+              <div class="mm-controls__row">
+                <input class="input" type="text" id="mindmap-search" placeholder="Rechercher..." value="${search}" />
+                <button type="button" class="btn btn-secondary mm-controls__recenter" data-action="mindmap-reset" title="Centrer la carte sur l'ensemble des n&oelig;uds">Recentrer</button>
+              </div>
+            </label>
+          </div>
         </div>
       </header>
       <div class="mindmap-body">
@@ -1128,10 +1200,460 @@ function renderMindmapPanel({
             </svg>
             ${nodesMarkup}
             ${linkMenu}
+            ${contextMenu}
           </div>
         </div>
         ${detailPanel}
       </div>
+      ${
+        deleteConfirm
+          ? `
+        <div class="mindmap-confirm-backdrop" role="dialog" aria-modal="true">
+          <div class="mindmap-confirm">
+            <h3>Supprimer le n&oelig;ud &quot;${confirmTitle}&quot;&nbsp;?</h3>
+            <p>Cette action est d&eacute;finitive.</p>
+            <div class="mindmap-confirm-actions">
+              <button type="button" class="btn btn-ghost" data-action="mindmap-delete-cancel">Annuler</button>
+              <button type="button" class="btn btn-danger" data-action="mindmap-delete-confirm" data-id="${selectedNodeId}">Supprimer</button>
+            </div>
+          </div>
+        </div>
+      `
+          : ""
+      }
+    </section>
+  `
+}
+
+function renderKnowledgePreview(content = "") {
+  const regex = /\[\[([^\]]+)\]\]/g
+  let cursor = 0
+  let html = ""
+  let match
+  while ((match = regex.exec(content)) !== null) {
+    const before = content.slice(cursor, match.index)
+    html += escapeHtml(before)
+    const raw = match[1] ?? ""
+    const pipeIndex = raw.indexOf("|")
+    const titleRaw = pipeIndex === -1 ? raw : raw.slice(0, pipeIndex)
+    const aliasRaw = pipeIndex === -1 ? "" : raw.slice(pipeIndex + 1)
+    const title = titleRaw.trim()
+    const label = (aliasRaw.trim() || title).trim()
+    if (title) {
+      html += `<button type="button" class="knowledge-link" data-action="knowledge-open-link" data-title="${encodeURIComponent(title)}">${escapeHtml(label)}</button>`
+    } else {
+      html += escapeHtml(match[0])
+    }
+    cursor = regex.lastIndex
+  }
+  html += escapeHtml(content.slice(cursor))
+  return html.replace(/\n/g, "<br>")
+}
+
+function renderKnowledgeGraphPanel(graph = {}, details = {}) {
+  const {
+    nodes = [],
+    edges = [],
+    selectedNodeId = null,
+    view = { offsetX: 0, offsetY: 0, scale: 1 },
+    search = "",
+    minDegree = 0,
+    showOrphans = false,
+    blockedMessage = "",
+    panelCollapsed = false,
+    settingsOpen = false
+  } = graph
+  const outgoingCount = details.outgoing?.length ?? 0
+  const incomingCount = details.backlinks?.length ?? 0
+  const totalCount = outgoingCount + incomingCount
+
+  const dotSizes = { sm: 10, md: 14, lg: 18 }
+  const degreeValues = nodes
+    .map((node) => node.degree ?? 0)
+    .sort((a, b) => a - b)
+  const degreeIndex = (ratio) =>
+    degreeValues.length ? degreeValues[Math.floor((degreeValues.length - 1) * ratio)] : 0
+  const lowCut = degreeIndex(0.33)
+  const highCut = degreeIndex(0.66)
+  const getDotTier = (degree) => {
+    if (!degreeValues.length || lowCut === highCut) {
+      return "md"
+    }
+    if (degree <= lowCut) {
+      return "sm"
+    }
+    if (degree >= highCut) {
+      return "lg"
+    }
+    return "md"
+  }
+  const getDotSize = (degree) => dotSizes[getDotTier(degree)] ?? dotSizes.md
+  const sizeById = new Map(nodes.map((node) => [node.id, getDotSize(node.degree ?? 0)]))
+  const nodeById = new Map(nodes.map((node) => [node.id, node]))
+  const neighborIds = new Set()
+
+  if (selectedNodeId) {
+    edges.forEach((edge) => {
+      if (edge.fromId === selectedNodeId) {
+        neighborIds.add(edge.toId)
+      } else if (edge.toId === selectedNodeId) {
+        neighborIds.add(edge.fromId)
+      }
+    })
+  }
+
+  const edgesMarkup = edges
+    .map((edge) => {
+      const fromNode = nodeById.get(edge.fromId)
+      const toNode = nodeById.get(edge.toId)
+      if (!fromNode || !toNode) {
+        return ""
+      }
+      const fromSize = sizeById.get(edge.fromId) ?? dotSizes.md
+      const toSize = sizeById.get(edge.toId) ?? dotSizes.md
+      const fromRect = { x: fromNode.x, y: fromNode.y, width: fromSize, height: fromSize }
+      const toRect = { x: toNode.x, y: toNode.y, width: toSize, height: toSize }
+      const fromCenter = { x: fromRect.x + fromRect.width / 2, y: fromRect.y + fromRect.height / 2 }
+      const toCenter = { x: toRect.x + toRect.width / 2, y: toRect.y + toRect.height / 2 }
+      const start = getRectEdgeIntersection(fromRect, fromCenter, toCenter)
+      const end = getRectEdgeIntersection(toRect, toCenter, fromCenter)
+      let edgeClass = "graph-edge"
+      if (selectedNodeId) {
+        if (edge.fromId === selectedNodeId) {
+          edgeClass += " is-outgoing"
+        } else if (edge.toId === selectedNodeId) {
+          edgeClass += " is-incoming"
+        } else {
+          edgeClass += " is-dim"
+        }
+      }
+      return `
+        <line class="${edgeClass}" data-from="${edge.fromId}" data-to="${edge.toId}" x1="${start.x}" y1="${start.y}" x2="${end.x}" y2="${end.y}" />
+      `
+    })
+    .join("")
+
+  const nodesMarkup = nodes
+    .map((node) => {
+      const isActive = node.id === selectedNodeId
+      const isNeighbor = neighborIds.has(node.id)
+      let nodeClass = "mindmap-node graph-node"
+      if (isActive) {
+        nodeClass += " is-active"
+      } else if (isNeighbor) {
+        nodeClass += " is-neighbor"
+      } else if (selectedNodeId) {
+        nodeClass += " is-dim"
+      }
+      const tier = getDotTier(node.degree ?? 0)
+      nodeClass += ` graph-node--${tier}`
+      const size = sizeById.get(node.id) ?? dotSizes.md
+      return `
+        <button
+          type="button"
+          class="${nodeClass}"
+          data-action="mindmap-node"
+          data-id="${node.id}"
+          data-title="${encodeURIComponent(node.title || "Sans titre")}"
+          aria-label="${escapeHtml(node.title)}"
+          style="transform: translate(${node.x}px, ${node.y}px); width: ${size}px; height: ${size}px;"
+        >
+          <span class="mindmap-node-title">${escapeHtml(node.title || "Sans titre")}</span>
+        </button>
+      `
+    })
+    .join("")
+
+  const outgoingItems = (details.outgoing ?? [])
+    .map((item) => {
+      const countLabel = item.count > 1 ? `<span class="graph-link-count">x${item.count}</span>` : ""
+      return `
+        <button type="button" class="graph-link" data-action="wiki-graph-select" data-id="${item.id}">
+          <span>${escapeHtml(item.title)}</span>
+          ${countLabel}
+        </button>
+      `
+    })
+    .join("")
+
+  const backlinksItems = (details.backlinks ?? [])
+    .map((item) => {
+      const contexts = (item.contexts ?? [])
+        .map((snippet) => `<p class="graph-backlink-context">${escapeHtml(snippet)}</p>`)
+        .join("")
+      return `
+        <div class="graph-backlink-item">
+          <button type="button" class="graph-link" data-action="wiki-graph-select" data-id="${item.id}">
+            <span>${escapeHtml(item.title || "Sans titre")}</span>
+          </button>
+          ${contexts}
+        </div>
+      `
+    })
+    .join("")
+
+  const settingsMenuClass = `graph-settings-menu${settingsOpen ? " is-open" : ""}`
+  const settingsExpanded = settingsOpen ? "true" : "false"
+
+
+  const graphBody = blockedMessage
+    ? `<div class="graph-blocked">${escapeHtml(blockedMessage)}</div>`
+    : nodes.length
+    ? `
+        <div class="knowledge-graph-body">
+          <div class="knowledge-graph-canvas">
+            <div class="mindmap-canvas wiki-graph-canvas" data-action="mindmap-canvas">
+              <div class="mindmap-viewport wiki-graph-viewport" style="transform: translate(${view.offsetX}px, ${view.offsetY}px) scale(${view.scale});">
+                <svg class="mindmap-edges graph-edges" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                  ${edgesMarkup}
+                </svg>
+                ${nodesMarkup}
+              </div>
+            </div>
+          </div>
+        </div>
+      `
+    : `<div class="graph-blocked">Aucune note a afficher pour le moment.</div>`
+
+  return `
+    <div class="knowledge-graph">
+      <div class="graph-settings">
+        <button
+          type="button"
+          class="graph-settings-toggle"
+          data-action="wiki-graph-settings-toggle"
+          aria-expanded="${settingsExpanded}"
+          aria-controls="graph-settings-menu"
+        >
+          &#x2699;
+        </button>
+        <div id="graph-settings-menu" class="${settingsMenuClass}" role="menu">
+          <label class="graph-settings-field">
+            <span>Recherche</span>
+            <input
+              id="wiki-graph-search"
+              class="input"
+              type="text"
+              placeholder="Recherche"
+              aria-label="Recherche"
+              value="${escapeHtml(search)}"
+            />
+          </label>
+          <div class="graph-settings-field" aria-label="Min connexions">
+            <span>Min connexions</span>
+            <div class="graph-settings-thresholds">
+              <button type="button" class="graph-threshold${Number(minDegree) === 0 ? " is-active" : ""}" data-action="wiki-graph-min" data-value="0">Tous</button>
+              <button type="button" class="graph-threshold${Number(minDegree) === 1 ? " is-active" : ""}" data-action="wiki-graph-min" data-value="1">1+</button>
+              <button type="button" class="graph-threshold${Number(minDegree) === 2 ? " is-active" : ""}" data-action="wiki-graph-min" data-value="2">2+</button>
+              <button type="button" class="graph-threshold${Number(minDegree) === 3 ? " is-active" : ""}" data-action="wiki-graph-min" data-value="3">3+</button>
+              <button type="button" class="graph-threshold${Number(minDegree) === 5 ? " is-active" : ""}" data-action="wiki-graph-min" data-value="5">5+</button>
+            </div>
+          </div>
+          <label class="graph-settings-toggle-field" title="Afficher orphelines">
+            <input id="wiki-graph-orphans" type="checkbox" ${showOrphans ? "checked" : ""} />
+            <span>Orphelines</span>
+          </label>
+        </div>
+      </div>
+      ${graphBody}
+      <div id="graph-tooltip" class="graph-tooltip" role="tooltip" aria-hidden="true"></div>
+    </div>
+  `
+}
+
+function renderKnowledgePanel({
+  projectTitle = "",
+  notes = [],
+  activeNote = null,
+  backlinks = [],
+  hasAnyNotes = false,
+  titleDrafts = {},
+  titleError = "",
+  duplicates = [],
+  renameBusy = false,
+  search = "",
+  sort = "recent",
+  previewOpen = false,
+  autocomplete = { open: false },
+  tab = "notes",
+  graph = {},
+  graphDetails = {}
+} = {}) {
+  const activeTab = tab === "graph" ? "graph" : "notes"
+  const hasNotes = notes.length > 0
+  const activeId = activeNote?.id ?? null
+  const noteTitle = activeNote?.title ?? ""
+  const noteContent = activeNote?.content ?? ""
+  const listItems = notes
+    .map((note) => {
+      const isActive = note.id === activeId
+      const draftTitle = titleDrafts[note.id]
+      const displayTitle = draftTitle !== undefined ? draftTitle : note.title
+      const updatedLabel = formatIdeaMetaDate(note.updated_at)
+      return `
+        <button type="button" class="knowledge-note-item${isActive ? " is-active" : ""}" data-action="knowledge-select" data-id="${note.id}">
+          <span class="knowledge-note-title">${escapeHtml(displayTitle || "Sans titre")}</span>
+          <span class="knowledge-note-meta">${updatedLabel || ""}</span>
+        </button>
+      `
+    })
+    .join("")
+
+  const emptyListMessage = search.trim()
+    ? "Aucune note ne correspond &agrave; la recherche."
+    : "Aucune note pour l&apos;instant."
+
+  const listPanel = hasNotes
+    ? listItems
+    : hasAnyNotes
+    ? `
+        <div class="knowledge-empty">
+          <p>${emptyListMessage}</p>
+        </div>
+      `
+    : `
+        <div class="knowledge-empty">
+          <p>${emptyListMessage}</p>
+          <button type="button" class="btn btn-secondary" data-action="knowledge-create">Cr&eacute;er la premi&egrave;re note</button>
+        </div>
+      `
+
+  const titleValue =
+    activeId && Object.prototype.hasOwnProperty.call(titleDrafts, activeId)
+      ? titleDrafts[activeId]
+      : noteTitle
+
+  const editorPanel = activeNote
+    ? `
+        <div class="knowledge-editor">
+          <div class="knowledge-editor-header">
+            <label class="field knowledge-title-field">
+              <span>Titre</span>
+              <input id="knowledge-title" class="input" type="text" value="${escapeHtml(titleValue)}" data-id="${activeNote.id}"${titleError ? ' aria-invalid="true"' : ""} />
+              <p id="knowledge-title-error" class="knowledge-title-error${titleError ? " is-visible" : ""}">${escapeHtml(titleError)}</p>
+            </label>
+            <button type="button" class="btn btn-secondary knowledge-preview-toggle" data-action="knowledge-preview-toggle">
+              ${previewOpen ? "Editer" : "Aper&ccedil;u"}
+            </button>
+          </div>
+          <div class="knowledge-editor-body">
+            ${
+              previewOpen
+                ? `<div class="knowledge-preview">${renderKnowledgePreview(noteContent)}</div>`
+                : `<textarea id="knowledge-content" class="input knowledge-content" rows="14" data-id="${activeNote.id}" placeholder="&Eacute;cris en Markdown. Utilise [[Titre]] pour lier une note.">${escapeHtml(noteContent)}</textarea>`
+            }
+            <div id="knowledge-autocomplete" class="knowledge-autocomplete${autocomplete.open ? " is-open" : ""}"></div>
+          </div>
+          <div class="knowledge-editor-footer">
+            <button type="button" class="btn btn-danger danger-hover" data-action="knowledge-delete" data-id="${activeNote.id}">Supprimer</button>
+          </div>
+        </div>
+      `
+    : `
+        <div class="knowledge-empty knowledge-empty--editor">
+          <h3>S&eacute;lectionne une note</h3>
+          <p>Ou cr&eacute;e la premi&egrave;re pour d&eacute;marrer ton wiki.</p>
+          <button type="button" class="btn btn-primary" data-action="knowledge-create">+ Nouvelle note</button>
+        </div>
+      `
+
+  const backlinkItems = backlinks
+    .map((note) => {
+      const contexts = (note.contexts ?? [])
+        .map((snippet) => `<p class="knowledge-backlink-context">${escapeHtml(snippet)}</p>`)
+        .join("")
+      return `
+        <div class="knowledge-backlink-item">
+          <button type="button" class="knowledge-backlink" data-action="knowledge-select" data-id="${note.id}">
+            <span>${escapeHtml(note.title || "Sans titre")}</span>
+          </button>
+          ${contexts}
+        </div>
+      `
+    })
+    .join("")
+
+  const backlinksPanel = backlinkItems
+    ? backlinkItems
+    : `<p class="knowledge-empty">Aucun lien entrant pour l&apos;instant.</p>`
+
+  const duplicatesPanel = duplicates.length
+    ? `
+        <div class="knowledge-duplicates">
+          <div class="knowledge-duplicates-title">Doublons detectes</div>
+          ${duplicates
+            .map((group) => {
+              const rows = group.notes
+                .slice(1)
+                .map(
+                  (note) => `
+                    <div class="knowledge-duplicate-row">
+                      <span>${escapeHtml(note.title || "Sans titre")}</span>
+                      <button type="button" class="btn btn-secondary btn-compact" data-action="knowledge-duplicate-rename" data-id="${note.id}">Renommer</button>
+                    </div>
+                  `
+                )
+                .join("")
+              return `
+                <div class="knowledge-duplicate-group">
+                  <div class="knowledge-duplicate-label">${escapeHtml(group.title || "Sans titre")}</div>
+                  ${rows}
+                </div>
+              `
+            })
+            .join("")}
+        </div>
+      `
+    : ""
+
+  const tabsMarkup = `
+      <div class="knowledge-tabs" role="tablist" aria-label="Connaissance">
+        <button type="button" class="knowledge-tab${activeTab === "notes" ? " is-active" : ""}" data-action="knowledge-tab" data-tab="notes" role="tab" aria-selected="${activeTab === "notes" ? "true" : "false"}">Notes</button>
+        <button type="button" class="knowledge-tab${activeTab === "graph" ? " is-active" : ""}" data-action="knowledge-tab" data-tab="graph" role="tab" aria-selected="${activeTab === "graph" ? "true" : "false"}">Graphe</button>
+      </div>
+    `
+
+  const notesLayout = `
+      ${duplicatesPanel}
+      <div class="knowledge-layout">
+        <aside class="knowledge-sidebar">
+          <div class="knowledge-sidebar-controls">
+            <input id="knowledge-search" class="input" type="text" placeholder="Rechercher..." value="${escapeHtml(search)}" />
+            <div class="knowledge-sidebar-actions">
+              <button type="button" class="btn btn-primary" data-action="knowledge-create">+ Nouvelle note</button>
+              <button type="button" class="btn btn-secondary" data-action="knowledge-sort-toggle">
+                ${sort === "alpha" ? "R&eacute;cents" : "A-Z"}
+              </button>
+            </div>
+          </div>
+          <div class="knowledge-list">
+            ${listPanel}
+          </div>
+        </aside>
+        <section class="knowledge-main">
+          ${editorPanel}
+        </section>
+        <aside class="knowledge-backlinks">
+          <h3>Li&eacute; depuis</h3>
+          ${backlinksPanel}
+        </aside>
+      </div>
+    `
+
+  const graphLayout =
+    activeTab === "graph" ? renderKnowledgeGraphPanel(graph, graphDetails) : ""
+
+  return `
+    <section class="panel card knowledge-panel${activeTab === "graph" ? " knowledge-panel--graph" : ""}">
+      <header class="knowledge-header">
+        <div>
+          <h2>Connaissance</h2>
+          <p class="knowledge-subtitle">Projet : ${escapeHtml(projectTitle)}</p>
+          ${renameBusy ? `<p class="knowledge-busy">Mise a jour des liens...</p>` : ""}
+        </div>
+        ${tabsMarkup}
+      </header>
+      ${activeTab === "graph" ? graphLayout : notesLayout}
     </section>
   `
 }
@@ -1165,6 +1687,24 @@ export function renderApp({
   ideasSort = "desc",
   ideasFiltersOpen = false,
   ideasNoteExpanded = false,
+  knowledgeNotes = [],
+  knowledgeActiveNote = null,
+  knowledgeBacklinks = [],
+  knowledgeHasNotes = false,
+  knowledgeSearch = "",
+  knowledgeSort = "recent",
+  knowledgeTab = "notes",
+  knowledgePreviewOpen = false,
+  knowledgeAutocomplete = { open: false },
+  knowledgeTitleDrafts = {},
+  knowledgeTitleError = "",
+  knowledgeDuplicates = [],
+  knowledgeRenameBusy = false,
+  wikiGraph = {},
+  wikiGraphDetails = { note: null, outgoing: [], backlinks: [] },
+  focusActive = false,
+  focusButtonLabel = "▶ Démarrer le focus",
+  focusIndicatorLabel = "",
   mindmapNodes = [],
   mindmapEdges = [],
   mindmapSelectedNodeId = null,
@@ -1174,7 +1714,10 @@ export function renderApp({
   mindmapCreateType = "note",
   mindmapLinkTypeMenu = null,
   mindmapFlashNodeId = null,
+  mindmapDeleteConfirmId = null,
+  mindmapContextMenu = null,
   mindmapView = { offsetX: 0, offsetY: 0, scale: 1 },
+  projectStatsView = null,
   characterSections = {},
   lastCloudSaveAt = null,
   cloudStatus = "",
@@ -1197,7 +1740,9 @@ export function renderApp({
       characters: "Personnages",
       inspiration: "Inspiration",
       mindmap: "Carte mentale",
-      ideas: "Idees"
+      ideas: "Idees",
+      stats: "Statistiques",
+      knowledge: "Connaissance"
     }[writingNav] ?? "Ecriture"
   const chapterIndex = hasChapterSelected
     ? chapters.findIndex((chapter) => chapter.id === selectedChapterId) + 1
@@ -1330,6 +1875,14 @@ export function renderApp({
             </select>
           </div>
           <div class="toolbar-group toolbar-group-right">
+            <button
+              type="button"
+              class="focus-toggle${focusActive ? " is-active" : ""}"
+              data-action="focus-toggle"
+              aria-pressed="${focusActive ? "true" : "false"}"
+            >
+              <span class="focus-toggle-label">${focusButtonLabel}</span>
+            </button>
             <button type="button" class="toolbar-button icon-history" data-command="undo" aria-label="Annuler" title="Annuler">
               <span aria-hidden="true">↺</span>
             </button>
@@ -1788,9 +2341,29 @@ export function renderApp({
     createType: mindmapCreateType,
     linkTypeMenu: mindmapLinkTypeMenu,
     flashNodeId: mindmapFlashNodeId,
+    mindmapDeleteConfirmId,
+    mindmapContextMenu,
     view: mindmapView,
     chapters,
     characters
+  })
+  const knowledgePanel = renderKnowledgePanel({
+    projectTitle: projectTitleLabel,
+    notes: knowledgeNotes,
+    activeNote: knowledgeActiveNote,
+    backlinks: knowledgeBacklinks,
+    hasAnyNotes: knowledgeHasNotes,
+    titleDrafts: knowledgeTitleDrafts,
+    titleError: knowledgeTitleError,
+    duplicates: knowledgeDuplicates,
+    renameBusy: knowledgeRenameBusy,
+    search: knowledgeSearch,
+    sort: knowledgeSort,
+    tab: knowledgeTab,
+    previewOpen: knowledgePreviewOpen,
+    autocomplete: knowledgeAutocomplete,
+    graph: wikiGraph,
+    graphDetails: wikiGraphDetails
   })
   const ideasPanel = `
         <section class="ideas-panel">
@@ -1849,11 +2422,165 @@ export function renderApp({
 
   const characterLayoutControls = ""
 
+  const statsPanel = (() => {
+    const stats = projectStatsView
+    if (!stats) {
+      return `
+        <section class="panel card stats-panel">
+          <header class="stats-header">
+            <div>
+              <h2>Statistiques</h2>
+              <p class="muted">Projet : ${projectTitleLabel}</p>
+            </div>
+          </header>
+          <p class="muted">Chargement des statistiques...</p>
+        </section>
+      `
+    }
+
+    const totalWords = stats.totalWords ?? 0
+    const totalChapters = stats.totalChapters ?? 0
+    const daysActive = stats.daysActive ?? 0
+    const hasAnyWriting = totalChapters > 0
+    const timeSpentLabel = stats.timeSpentMinutes ? `${stats.timeSpentMinutes} min` : "—"
+    const timeSpentNote = stats.timeSpentMinutes
+      ? ""
+      : "Tes sessions appara&icirc;tront ici d&egrave;s que tu utiliseras le focus."
+    const timePerDayLabel = stats.timePerDayMinutes ? `${stats.timePerDayMinutes} min` : "—"
+    const wordsPerDayLabel = stats.wordsPerDay ? `${stats.wordsPerDay} mots / jour` : "—"
+    const lastActivity = stats.lastActivity
+    const lastActivityDate = lastActivity?.timestamp
+      ? formatDate(new Date(lastActivity.timestamp).toISOString())
+      : "Aucune activit&eacute;"
+    const lastActivityWords = lastActivity ? `${lastActivity.words} mots` : ""
+
+    const series = stats.series ?? []
+    const chart =
+      series.length > 0
+        ? (() => {
+            const width = 420
+            const height = 140
+            const max = Math.max(...series.map((item) => item.words), 1)
+            const gap = 6
+            const barWidth = Math.max(8, (width - gap * (series.length - 1)) / series.length)
+            const bars = series
+              .map((item, index) => {
+                const h = Math.round((item.words / max) * (height - 20))
+                const x = Math.round(index * (barWidth + gap))
+                const y = height - h
+                return `<rect x="${x}" y="${y}" width="${barWidth}" height="${h}" rx="4"></rect>`
+              })
+              .join("")
+            return `
+              <svg class="stats-chart" viewBox="0 0 ${width} ${height}" role="img" aria-label="Evolution des mots">
+                ${bars}
+              </svg>
+            `
+          })()
+        : `
+          <div class="stats-evolution-placeholder">
+            <div class="stats-evolution-dots">
+              <span></span><span></span><span></span><span></span>
+            </div>
+            <p class="stats-empty">Ton &eacute;volution appara&icirc;tra ici d&egrave;s tes premi&egrave;res sessions d&apos;&eacute;criture.</p>
+          </div>
+        `
+
+    const maxWords = Math.max(...(stats.chapters ?? []).map((chapter) => chapter.words), 1)
+    const chapterRows = (stats.chapters ?? [])
+      .map((chapter, index) => {
+        const label = chapter.title || `Chapitre ${index + 1}`
+        const percent = Math.round((chapter.words / maxWords) * 100)
+        return `
+          <div class="stats-chapter-row">
+            <div class="stats-chapter-meta">
+              <span class="stats-chapter-title">${label}</span>
+              <span class="stats-chapter-words">${chapter.words} mots</span>
+            </div>
+            <div class="stats-chapter-bar">
+              <span style="width: ${percent}%;"></span>
+            </div>
+          </div>
+        `
+      })
+      .join("")
+
+    const rhythmBlock = daysActive
+      ? `
+          <div class="stats-rhythm">
+            <div>
+              <span class="stats-rhythm-label">Moyenne</span>
+              <span class="stats-rhythm-value">${wordsPerDayLabel}</span>
+              <span class="stats-rhythm-meta">${timePerDayLabel} / jour</span>
+            </div>
+            <div class="stats-rhythm-item stats-rhythm-item--last">
+              <span class="stats-rhythm-label">Derni&egrave;re activit&eacute;</span>
+              <span class="stats-rhythm-value">${lastActivityDate}</span>
+              <span class="stats-rhythm-meta">${lastActivityWords}</span>
+            </div>
+          </div>
+        `
+      : `<p class="stats-empty">Ton rythme se dessinera naturellement au fil des jours.</p>`
+
+    const chaptersBlock =
+      (stats.chapters ?? []).length > 0
+        ? `
+          <div class="stats-chapters">
+            ${chapterRows}
+          </div>
+        `
+        : `<p class="stats-empty">Commence &agrave; &eacute;crire pour voir appara&icirc;tre tes statistiques.</p>`
+
+    return `
+      <section class="panel card stats-panel">
+        <header class="stats-header">
+          <div>
+            <h2>Statistiques</h2>
+            <p class="stats-subtitle">Projet : ${projectTitleLabel}</p>
+            <p class="stats-note">Donn&eacute;es calcul&eacute;es automatiquement &agrave; partir de l&apos;&eacute;criture.</p>
+            ${!hasAnyWriting ? `<p class="stats-empty">Commence &agrave; &eacute;crire pour voir appara&icirc;tre tes statistiques.</p>` : ""}
+          </div>
+        </header>
+        <section class="stats-kpis">
+          <div class="stats-kpi">
+            <span class="stats-kpi__value">${timeSpentLabel}</span>
+            <span class="stats-kpi__label">Temps d&apos;&eacute;criture</span>
+            ${timeSpentNote ? `<span class="stats-kpi__note">${timeSpentNote}</span>` : ""}
+          </div>
+          <div class="stats-kpi">
+            <span class="stats-kpi__value">${totalWords}</span>
+            <span class="stats-kpi__label">Mots &eacute;crits</span>
+          </div>
+          <div class="stats-kpi">
+            <span class="stats-kpi__value">${totalChapters}</span>
+            <span class="stats-kpi__label">Chapitres</span>
+          </div>
+          <div class="stats-kpi">
+            <span class="stats-kpi__value">${daysActive}</span>
+            <span class="stats-kpi__label">Jours actifs</span>
+          </div>
+        </section>
+        <section class="stats-section">
+          <h3>Rythme</h3>
+          ${rhythmBlock}
+        </section>
+        <section class="stats-section">
+          <h3>&Eacute;volution dans le temps</h3>
+          ${chart}
+        </section>
+        <section class="stats-section">
+          <h3>R&eacute;partition par chapitre</h3>
+          ${chaptersBlock}
+        </section>
+      </section>
+    `
+  })()
+
   return `
-    <section class="page-shell writing-page">
+    <section class="page-shell writing-page${writingNav === "knowledge" && knowledgeTab === "graph" ? " writing-page--graph" : ""}">
       ${renderTopBar({ userEmail, activeRoute: "projects", lastProjectId: selectedProjectId, lastCloudSaveAt, cloudStatus, cloudBusy, accountMenuOpen, backupStatus, backupMenuOpen })}
-      <div class="page app-shell">
-        <div class="writing-layout${writingNav === "chapter" ? " with-chapter" : ""}">
+    <div class="page app-shell">
+        <div class="writing-layout${writingNav === "chapter" ? " with-chapter" : ""}${writingNav === "stats" ? " has-stats" : ""}${writingNav === "knowledge" && knowledgeTab === "graph" ? " writing-layout--graph" : ""}">
         <aside class="writing-sidebar editor-sidebar">
           <section class="panel card writing-nav">
             <div class="writing-nav-header">Plumeo</div>
@@ -1904,13 +2631,31 @@ export function renderApp({
                 </span>
                 <span class="editor-sidebar__label">Carte mentale</span>
               </button>
+              <button type="button" class="writing-nav-item editor-sidebar__item${writingNav === "knowledge" ? " is-active" : ""}" data-action="writing-nav" data-nav="knowledge" aria-label="Connaissance" title="Connaissance">
+                <span class="writing-nav-icon editor-sidebar__icon" aria-hidden="true">
+                  <svg viewBox="0 0 24 24">
+                    <path d="M6 4h10a2 2 0 0 1 2 2v12a1 1 0 0 1-1 1H7a2 2 0 0 0-2 2V6a2 2 0 0 1 2-2z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>
+                    <path d="M6 8h8M6 12h8" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+                  </svg>
+                </span>
+                <span class="editor-sidebar__label">Connaissance</span>
+              </button>
+              <button type="button" class="writing-nav-item editor-sidebar__item${writingNav === "stats" ? " is-active" : ""}" data-action="writing-nav" data-nav="stats" aria-label="Statistiques" title="Statistiques">
+                <span class="writing-nav-icon editor-sidebar__icon" aria-hidden="true">
+                  <svg viewBox="0 0 24 24">
+                    <path d="M5 18V9m7 9V6m7 12v-7" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+                    <path d="M4 18h16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+                  </svg>
+                </span>
+                <span class="editor-sidebar__label">Statistiques</span>
+              </button>
             </nav>
           </section>
         </aside>
 
         ${writingNav === "chapter" ? chapterSidebar : ""}
 
-        <main class="writing-editor${writingNav === "inspiration" ? " writing-editor--wide" : ""}${writingNav === "ideas" ? " writing-editor--ideas" : ""}${writingNav === "mindmap" ? " writing-editor--mindmap" : ""}">
+        <main class="writing-editor${writingNav === "inspiration" ? " writing-editor--wide" : ""}${writingNav === "ideas" ? " writing-editor--ideas" : ""}${writingNav === "mindmap" ? " writing-editor--mindmap" : ""}${writingNav === "knowledge" ? " writing-editor--knowledge" : ""}${writingNav === "stats" ? " writing-editor--stats" : ""}${writingNav === "knowledge" && knowledgeTab === "graph" ? " writing-editor--knowledge-graph" : ""}">
         ${
           writingNav === "characters"
             ? characterPanel
@@ -1920,11 +2665,21 @@ export function renderApp({
             ? ideasPanel
             : writingNav === "mindmap"
             ? mindmapPanel
+            : writingNav === "knowledge"
+            ? knowledgePanel
+            : writingNav === "stats"
+            ? statsPanel
             : `
             <section class="panel card editor ${hasChapterSelected ? "" : "is-disabled"}">
-              <div class="panel-header">
-                <span id="status-text" class="status">${statusText}</span>
-                <span id="editor-word-count" class="status"></span>
+              <div class="panel-header editor-header">
+                <div class="editor-header-left">
+                  <span class="chapter-title">${escapeHtml(chapterTitle || "Sans titre")}</span>
+                  <span id="focus-indicator" class="focus-indicator${focusActive ? " is-active" : ""}">${focusIndicatorLabel}</span>
+                </div>
+                <div class="editor-header-right">
+                  <span id="status-text" class="status">${statusText}</span>
+                  <span id="editor-word-count" class="status"></span>
+                </div>
               </div>
               <div class="editor-body">
                 ${editorContent}

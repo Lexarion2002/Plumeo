@@ -68,6 +68,8 @@ export async function route() {
       ideas: "ideas",
       inspiration: "inspiration",
       mindmap: "mindmap",
+      stats: "stats",
+      knowledge: "knowledge",
       settings: "chapter"
     }
     if (!(subview in navMap)) {

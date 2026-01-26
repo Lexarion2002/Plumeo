@@ -30,6 +30,9 @@ export async function saveToCloud() {
     const mindmapNodes = await idbGetAll("mindmap_nodes")
     const mindmapEdges = await idbGetAll("mindmap_edges")
     const writingSessions = await idbGetAll("writing_sessions")
+    const knowledgeNotes = await idbGetAll("knowledge_notes")
+    const knowledgeLinks = await idbGetAll("knowledge_links")
+    const focusSessions = await idbGetAll("focus_sessions")
     const payload = {
       schema: 1,
       saved_at: new Date().toISOString(),
@@ -40,7 +43,10 @@ export async function saveToCloud() {
       ideas,
       mindmapNodes,
       mindmapEdges,
-      writingSessions
+      writingSessions,
+      knowledgeNotes,
+      knowledgeLinks,
+      focusSessions
     }
     const blob = new Blob([JSON.stringify(payload)], { type: "application/json" })
     const path = buildCloudPath(userResult.userId)
@@ -102,6 +108,9 @@ export async function loadFromCloud({ applyIfNewer = false } = {}) {
       : Array.isArray(parsed?.writing_sessions)
         ? parsed.writing_sessions
         : []
+    const knowledgeNotes = Array.isArray(parsed?.knowledgeNotes) ? parsed.knowledgeNotes : []
+    const knowledgeLinks = Array.isArray(parsed?.knowledgeLinks) ? parsed.knowledgeLinks : []
+    const focusSessions = Array.isArray(parsed?.focusSessions) ? parsed.focusSessions : []
 
     await upsertProjectsLocal(projects)
     await upsertChaptersLocal(chapters, { force: true })
@@ -111,7 +120,10 @@ export async function loadFromCloud({ applyIfNewer = false } = {}) {
       ...ideas.map((item) => idbPut("ideas", item)),
       ...mindmapNodes.map((item) => idbPut("mindmap_nodes", item)),
       ...mindmapEdges.map((item) => idbPut("mindmap_edges", item)),
-      ...writingSessions.map((item) => idbPut("writing_sessions", item))
+      ...writingSessions.map((item) => idbPut("writing_sessions", item)),
+      ...knowledgeNotes.map((item) => idbPut("knowledge_notes", item)),
+      ...knowledgeLinks.map((item) => idbPut("knowledge_links", item)),
+      ...focusSessions.map((item) => idbPut("focus_sessions", item))
     ])
 
     if (savedAt && Number.isFinite(savedAt)) {
